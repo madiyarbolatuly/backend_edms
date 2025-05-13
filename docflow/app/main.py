@@ -19,7 +19,7 @@ app = FastAPI(
 # 1) CORS (for React dev on 3000/5173/8080)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000", "http://localhost:8080"],
+    allow_origins=["http://localhost:5173", "http://localhost:3000", "http://localhost:8080", "http://localhost:8081"],
     allow_methods=["*"],
     allow_headers=["*"],
 )  # :contentReference[oaicite:5]{index=5}
