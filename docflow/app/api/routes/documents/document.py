@@ -106,8 +106,13 @@ async def add_to_bin(
     response_model=None,
     name="list_of_bin",
 )
-async def list_bin():
-    return await metadata_repo.bin_list(owner=owner)
+async def list_bin(
+    metadata_repo: DocumentMetadataRepository = Depends(
+        get_repository(DocumentMetadataRepository)
+    ),
+    user: TokenData = Depends(get_current_user),
+):
+    return await metadata_repo.bin_list(owner=user)
 
 @router.delete(
     "/trash/{file_name}",
@@ -128,9 +133,9 @@ async def perm_delete(
             await metadata_repository.empty_bin(owner=user)
         elif trash.get("response"):
             for entry in trash["response"]:
-                if entry.DocumentMetadata.name == file_name:
+                if entry.name == file_name:
                     await metadata_repository.perm_delete_a_doc(
-                        document=entry.DocumentMetadata.id,
+                        document=entry.id,
                         owner=user
                     )
                     break

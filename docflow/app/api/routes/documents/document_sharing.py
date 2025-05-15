@@ -1,4 +1,3 @@
-
 from uuid import UUID
 from app.core.config import settings
 from typing import Union
@@ -67,9 +66,8 @@ async def share_link_document(
 
         shareable_link = await repository.get_shareable_link(
             owner_id=user.id,
-            url=personal_url,
-            visits=visits,
             filename=doc.__dict__["name"],
+            visits=visits,
             share_to=share_to,
         )
 

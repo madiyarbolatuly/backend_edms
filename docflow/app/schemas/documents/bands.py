@@ -9,7 +9,7 @@ from app.db.tables.base_class import StatusEnum, NotifyEnum
 
 # Document Metadata
 class DocumentMetadataBase(BaseModel):
-    _id: UUID
+    id: UUID
     owner_id: str
     name: str
     file_path: str
@@ -21,6 +21,9 @@ class DocumentMetadataBase(BaseModel):
     status: StatusEnum
     file_hash: Optional[str]
     access_to: Optional[List[str]]
+
+    class Config:
+        from_attributes = True
 
 
 class DocumentMetadataPatch(BaseModel):

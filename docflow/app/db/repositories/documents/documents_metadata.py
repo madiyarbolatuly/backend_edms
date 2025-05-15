@@ -255,20 +255,16 @@ class DocumentMetadataRepository:
         except Exception as e:
             raise http_404(msg=f"No file with {document}") from e
 
-    async def bin_list(self, owner: TokenData) -> Dict[str, List[Row | Row] | int]:
+    async def bin_list(self, owner: TokenData) -> dict:
 
         stmt = (
             select(DocumentMetadata)
             .where(DocumentMetadata.owner_id == owner.id)
             .where(DocumentMetadata.status == StatusEnum.deleted)
         )
-
-        result = (await self.session.execute(stmt)).fetchall()
-        # delete documents that lived 30 days in bin
-        if await self._auto_delete(result):
-            result = (await self.session.execute(stmt)).fetchall()
-
-        return {"response": result, "no_of_docs": len(result)}
+        result = await self.session.scalars(stmt)
+        docs = [DocumentMetadataRead.from_orm(doc) for doc in result]
+        return {"response": docs, "no_of_docs": len(docs)}
 
     async def restore(self, file: str, owner: TokenData) -> DocumentMetadataRead:
 
@@ -276,12 +272,12 @@ class DocumentMetadataRepository:
 
         if doc_list["no_of_docs"] > 0:
             for doc in doc_list["response"]:
-                if doc.DocumentMetadata.name == file:
+                if doc.name == file:
                     change = {"status": StatusEnum.private}
                     await self._execute_update(
-                        db_document=doc.DocumentMetadata, changes=change
+                        db_document=doc, changes=change
                     )
-                    return DocumentMetadataRead(**doc.DocumentMetadata.__dict__)
+                    return DocumentMetadataRead(**doc.__dict__)
             raise http_409(msg="Doc is not deleted")
         raise http_404(msg="Doc does not exists")
 
