@@ -38,7 +38,7 @@ class DocumentSharingRepository:
         result = await self.session.execute(stmt)
         email = result.scalar_one_or_none()
         if not email:
-            raise http_404(msg="User not found")
+            raise http_404(msg="Пользователь не найден.")
         return email
 
     @staticmethod
@@ -94,7 +94,7 @@ class DocumentSharingRepository:
         if existing:
             data = existing.__dict__
             return {
-                "note": f"Link still valid until {data['expires_at']}",
+                "note": f"Ссылка действительна до {data['expires_at']}",
                 "response": {
                     "shareable_link": (
                         f"{settings.host_url}{settings.api_prefix}/doc/{data['url_id']}"
@@ -141,7 +141,7 @@ class DocumentSharingRepository:
 
         if not record:
             raise http_404(
-                msg="Shared link expired or visit limit reached."
+                msg="Ссылка на документ недействительна или срок ее действия истек."
             )
 
         # decrement or delete
@@ -161,12 +161,12 @@ class DocumentSharingRepository:
             return
 
         sender_email = await self.get_user_mail(user)
-        subject = f"DocFlow: {user.username} shared a document"
+        subject = f"GQ Group: {user.username} поделился с документом"
         body = (
-            f"Hello,\n\n"
-            f"{user.username} ({sender_email}) has shared a document with you.\n"
-            f"Access it here: {link}\n\n"
-            f"— DocFlow"
+            f"Здравствуйте,\n\n"
+            f"{user.username} ({sender_email}) поделился с вами документом.\n"
+            f"Ознакомиться с ним можно по ссылке: {link}\n\n"
+            f"EDMS GQ Group\n"
         )
 
         for recipient in mail_to:
@@ -185,7 +185,7 @@ class DocumentSharingRepository:
         result = await self.session.execute(stmt)
         record = result.scalar_one_or_none()
         if not record:
-            raise http_404(msg="Share link invalid or expired.")
+            raise http_404(msg="Ссылка для доступа недействительна или срок ее действия истек.")
 
         user_email = await self.get_user_mail(user)
         allowed = (
@@ -218,12 +218,12 @@ class DocumentSharingRepository:
             tmp.flush()
 
             user_email = await self.get_user_mail(owner)
-            subject = f"{owner.username} shared a file with you"
+            subject = f"{owner.username} поделился документом с вами"
             for recipient in share_request.share_to:
                 body = (
-                    f"Hello {recipient},\n\n"
-                    f"{owner.username} ({user_email}) has shared a file with you.\n\n"
-                    f"Best,\nDocFlow"
+                    f"Здравствуйте {recipient},\n\n"
+                    f"{owner.username} ({user_email}) поделился документом с вами\n\n"
+                    
                 )
                 mail_service(
                     mail_to=recipient,

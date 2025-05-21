@@ -11,7 +11,7 @@ class GlobalConfig(BaseSettings):
     Global Configuration for the FastAPI application.
     """
 
-    title: str = os.environ.get("TITLE", "DocFlow EDMS")
+    title: str = os.environ.get("TITLE", "EDMS")
     version: str = "1.0.0"
     description: str = os.environ.get("DESCRIPTION", "Electronic Document Management System")
     host_url: str = "http://localhost:8000"

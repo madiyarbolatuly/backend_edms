@@ -78,7 +78,7 @@ class DocumentMetadataRepository:
         try:
             await self.session.execute(stmt)
         except Exception as e:
-            raise http_409(msg=f"Error while updating document: {doc_name}") from e
+            raise http_409(msg=f"Ошибка при обновлении документа: {doc_name}") from e
 
     async def _update_access_and_permission(self, db_document, changes, user_repo):
 
@@ -93,10 +93,10 @@ class DocumentMetadataRepository:
                 await self._update_doc_user_access(db_document, user_id)
 
             except IntegrityError as e:
-                raise http_409(msg=f"User '{user_email}' already has access...") from e
+                raise http_409(msg=f"g '{user_email}' уже имеет доступ...") from e
             except AttributeError as e:
                 raise http_404(
-                    msg=f"The user with '{user_email}' does not exists, make sure user has account in DocFlow."
+                    msg=f"Пользователь с адресом '{user_email}' не существует, убедитесь, что у пользователя есть аккаунт в DocFlow."
                 ) from e
 
     async def _update_doc_user_access(self, db_document, user_id):
@@ -159,7 +159,7 @@ class DocumentMetadataRepository:
             await self.session.refresh(db_document)
         except IntegrityError as e:
             raise http_404(
-                msg=f"Document with name: {document_upload.name} already exists.",
+                msg=f"Документ с именем: {document_upload.name} уже существует.",
             ) from e
 
         return DocumentMetadataRead(**db_document.__dict__)
@@ -312,9 +312,9 @@ class DocumentMetadataRepository:
             return DocumentMetadataRead(**doc.__dict__)
 
         if doc and doc.status == StatusEnum.archived:
-            raise http_409(msg="Doc is already archived")
+            raise http_409(msg="Документ уже в архиве")
 
-        raise http_404(msg="Doc does not exist")
+        raise http_404(msg="Документ не существует")
 
     async def archive_list(self, user: TokenData) -> Dict[str, List[str] | int]:
 
