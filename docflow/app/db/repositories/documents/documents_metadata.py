@@ -19,6 +19,8 @@ from app.schemas.documents.documents_metadata import (
     DocumentMetadataCreate,
     DocumentMetadataRead,
 )
+from app.schemas.documents.documents_metadata import FolderCreate, FolderRead
+
 
 
 class DocumentMetadataRepository:
@@ -112,16 +114,6 @@ class DocumentMetadataRepository:
             doc_user_access.delete().where(doc_user_access.c.doc_id == document.id)
         )
 
-    async def _auto_delete(self, bin_items: List) -> bool | None:
-
-        for item in bin_items:
-            if item.DocumentMetadata.created_at <= datetime.now(timezone.utc):
-                stmt = delete(DocumentMetadata).where(
-                    DocumentMetadata.id == item.DocumentMetadata.id
-                )
-                await self.session.execute(stmt)
-                return True
-
     async def get_doc(self, filename: str) -> Dict[str, Any]:
         """
         Get document by filename irrespective of logged-in user.
@@ -177,19 +169,17 @@ class DocumentMetadataRepository:
             .limit(limit)
         )
 
-        try:
-            result = await self.session.execute(stmt)
-            result_list = result.fetchall()
+        result = await self.session.execute(stmt)
+        result_list = result.fetchall()
 
-            for row in result_list:
-                row.doc_cls.__dict__.pop("_sa_instance_state", None)
+        for row in result_list:
+            row.doc_cls.__dict__.pop("_sa_instance_state", None)
 
-            result = [
-                DocumentMetadataRead(**row.doc_cls.__dict__) for row in result_list
-            ]
-            return {f"documents of {owner.username}": result, "no_of_docs": len(result)}
-        except Exception as e:
-            raise http_404(msg="No Documents found") from e
+        result = [
+            DocumentMetadataRead(**row.doc_cls.__dict__) for row in result_list
+        ]
+        # Always return a consistent response, even if empty
+        return {f"documents of {owner.username}": result, "no_of_docs": len(result)}
 
     async def get(
         self, document: Union[str, UUID], owner: TokenData
@@ -338,3 +328,45 @@ class DocumentMetadataRepository:
         if doc and doc.status != StatusEnum.archived:
             raise http_409(msg="Doc is not archived")
         raise http_404(msg="Doc does not exits")
+
+    async def create_folder(self, owner_id: str, data: FolderCreate) -> FolderRead:
+        folder = DocumentMetadata(
+            owner_id=owner_id,
+            name=data.name,
+            type="folder",
+            parent_id=data.parent_id,
+        )
+        self.session.add(folder)
+        await self.session.commit()
+        await self.session.refresh(folder)
+        return FolderRead.from_orm(folder)
+
+    async def list_children(self, owner_id: str, parent_id: UUID = None) -> List[FolderRead]:
+        q = (
+            await self.session.execute(
+                select(DocumentMetadata)
+                .where(DocumentMetadata.owner_id == owner_id)
+                .where(DocumentMetadata.parent_id == parent_id)
+            )
+        )
+        results = q.scalars().all()
+        return [FolderRead.from_orm(r) for r in results]
+
+    async def archive_document(self, document_id: UUID):
+        stmt = update(DocumentMetadata).where(DocumentMetadata.id == document_id).values(is_archived=True)
+        await self.session.execute(stmt)
+        await self.session.commit()
+
+    async def is_document_archived(self, document_id: UUID) -> bool:
+        stmt = select(DocumentMetadata.is_archived).where(DocumentMetadata.id == document_id)
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def toggle_starred(self, document_id: UUID):
+        stmt = select(DocumentMetadata.is_starred).where(DocumentMetadata.id == document_id)
+        result = await self.session.execute(stmt)
+        is_starred = result.scalar_one_or_none()
+
+        stmt = update(DocumentMetadata).where(DocumentMetadata.id == document_id).values(is_starred=not is_starred)
+        await self.session.execute(stmt)
+        await self.session.commit()

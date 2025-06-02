@@ -21,6 +21,7 @@ class DocumentMetadataBase(BaseModel):
     status: StatusEnum
     file_hash: Optional[str]
     access_to: Optional[List[str]]
+    parent_id: Optional[UUID] = None
 
     class Config:
         from_attributes = True

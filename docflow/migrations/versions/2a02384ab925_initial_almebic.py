@@ -87,7 +87,6 @@ def upgrade() -> None:
             ["users.id"],
         ),
         sa.PrimaryKeyConstraint("id"),
-        # removed UniqueConstraint("s3_url") since we're no longer using S3
     )
     op.create_index(
         op.f("ix_document_metadata_id"), "document_metadata", ["id"], unique=False

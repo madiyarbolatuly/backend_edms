@@ -36,12 +36,13 @@ app.mount(
 app.include_router(router=router, prefix=settings.api_prefix)
 
 # 4) Mount React build as catch-all
-frontend_build = pathlib.Path(__file__).parent.parent / "frontend" / "dist"
-app.mount(
-    "/",
-    StaticFiles(directory=str(frontend_build), html=True),
-    name="frontend",
-)  # :contentReference[oaicite:7]{index=7}
+frontend_build = pathlib.Path(__file__).parent / "frontend" / "dist"
+if frontend_build.exists():
+    app.mount(
+        "/",
+        StaticFiles(directory=str(frontend_build), html=True),
+        name="frontend",
+    )  # :contentReference[oaicite:7]{index=7}
 
 # 5) Favicon and root for OpenAPI
 FAVICON_PATH = "favicon.ico"

@@ -1,0 +1,30 @@
+                    Table "public.document_metadata"
+   Column    |           Type           | Collation | Nullable | Default 
+-------------+--------------------------+-----------+----------+---------
+ id          | uuid                     |           | not null | 
+ owner_id    | character varying        |           | not null | 
+ name        | character varying        |           | not null | 
+ file_path   | character varying        |           | not null | 
+ created_at  | timestamp with time zone |           | not null | now()
+ size        | integer                  |           |          | 
+ file_type   | character varying        |           |          | 
+ tags        | character varying[]      |           |          | 
+ categories  | character varying[]      |           |          | 
+ status      | statusenum               |           |          | 
+ file_hash   | character varying        |           |          | 
+ access_to   | character varying[]      |           |          | 
+ type        | character varying        |           |          | 
+ parent_id   | uuid                     |           |          | 
+ is_archived | boolean                  |           | not null | false
+ is_starred  | boolean                  |           | not null | false
+Indexes:
+    "document_metadata_pkey" PRIMARY KEY, btree (id)
+    "ix_document_metadata_id" btree (id)
+    "uq_name_parent" UNIQUE CONSTRAINT, btree (name, parent_id)
+Foreign-key constraints:
+    "document_metadata_owner_id_fkey" FOREIGN KEY (owner_id) REFERENCES users(id)
+    "document_metadata_parent_id_fkey" FOREIGN KEY (parent_id) REFERENCES document_metadata(id)
+Referenced by:
+    TABLE "doc_user_access" CONSTRAINT "doc_user_access_doc_id_fkey" FOREIGN KEY (doc_id) REFERENCES document_metadata(id) ON DELETE CASCADE
+    TABLE "document_metadata" CONSTRAINT "document_metadata_parent_id_fkey" FOREIGN KEY (parent_id) REFERENCES document_metadata(id)
+

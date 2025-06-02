@@ -13,9 +13,11 @@ from sqlalchemy import (
     ForeignKey,
     Table,
     UniqueConstraint,
+    Boolean,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, relationship
+from sqlalchemy.dialects.postgresql import UUID
 
 from app.db.models import Base
 from app.db.tables.base_class import StatusEnum
@@ -37,12 +39,35 @@ doc_user_access = Table(
 class DocumentMetadata(Base):
     __tablename__ = "document_metadata"
 
-    id: UUID = Column(
-        UUID(as_uuid=True), default=uuid4, primary_key=True, index=True, nullable=False
-    )
-    owner_id: Mapped[str] = Column(String, ForeignKey("users.id"), nullable=False)
-    name: str = Column(String)
+    id = Column(UUID(as_uuid=True), primary_key=True, index=True, nullable=False, default=uuid4, server_default=text("gen_random_uuid()"))
+    owner_id = Column(String, ForeignKey("users.id"), nullable=False)
+    name = Column(String, nullable=False)
     file_path: Optional[str] = Column(String, nullable=False)
+
+    #--Folder creation
+
+    type: Mapped[str] = Column(Enum("file", "folder", name="document_type"), 
+                               nullable=False, default="file")
+    parent_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("document_metadata.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    parent: Mapped["DocumentMetadata"] = relationship(
+        "DocumentMetadata",
+        remote_side=[id],
+        back_populates="children"
+    )
+    children: Mapped[List["DocumentMetadata"]] = relationship(
+        "DocumentMetadata",
+        back_populates="parent",
+        cascade="all, delete"
+    )
+
+    __table_args__ = (
+        UniqueConstraint("name", "parent_id", name="uq_name_parent"),  # no duplicate names in same folder
+    )
+    #--Folder creation
 
     created_at = Column(
         DateTime(timezone=True),
@@ -57,8 +82,12 @@ class DocumentMetadata(Base):
     status: Enum = Column(Enum(StatusEnum), default=StatusEnum.private)
     file_hash: Optional[str] = Column(String)
     access_to: Optional[List[str]] = Column(ARRAY(String))
+    type = Column(String, default='file')  # 'file' or 'folder'
+    parent_id = Column(UUID(as_uuid=True), ForeignKey('document_metadata.id'), nullable=True)
 
     update_access = relationship(
         "User", secondary=doc_user_access, passive_deletes=True
     )
     owner = relationship("User", back_populates="owner_of")
+    is_archived = Column(Boolean, default=False, nullable=False, server_default="false")
+    is_starred = Column(Boolean, default=False, nullable=False, server_default="false")

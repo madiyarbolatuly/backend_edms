@@ -4,6 +4,8 @@ from uuid import UUID
 from fastapi import APIRouter, status, Body, Depends, Query, HTTPException
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
+from pydantic import BaseModel
+from typing import Optional
 
 from app.api.dependencies.repositories import get_repository
 from app.api.dependencies.auth_utils import get_current_user
@@ -303,3 +305,64 @@ async def read_users_me(token: str = Depends(oauth2_scheme)):
         "email": user.email,
         "user_since": user.user_since
     }
+
+
+class FolderCreate(BaseModel):
+    name: str
+    parent_id: Optional[UUID] = None
+
+
+@router.post(
+    "/v2/metadata/upload",
+    response_model=DocumentMetadataRead,
+    status_code=status.HTTP_201_CREATED,
+    name="create_folder"
+)
+async def create_folder(
+    folder: FolderCreate,
+    repository: DocumentMetadataRepository = Depends(get_repository(DocumentMetadataRepository)),
+    user: TokenData = Depends(get_current_user)
+) -> DocumentMetadataRead:
+    """
+    Create a new folder entry. Does not upload any file content.
+    """
+    # Assign owner and type
+    metadata = DocumentMetadataCreate(**folder.dict())
+    metadata.owner_id = user.id
+    metadata.type = "folder"
+    
+    # Optional: Validate parent exists and is a folder
+    if metadata.parent_id:
+        parent = await repository.get(metadata.parent_id, owner=user)
+        if not parent or parent.type != "folder":
+            raise HTTPException(status_code=404, detail="Parent folder not found")
+    
+    # Use the same repository.upload() logic (it just INSERTs metadata)
+    return await repository.upload(document_upload=metadata)
+
+
+@router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_document(document_id: UUID, repository: DocumentMetadataRepository = Depends(get_repository)):
+    if await repository.is_document_archived(document_id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cannot delete archived document.")
+    # ...existing delete logic...
+
+
+@router.patch("/{document_id}")
+async def edit_document(document_id: UUID, repository: DocumentMetadataRepository = Depends(get_repository)):
+    if await repository.is_document_archived(document_id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cannot edit archived document.")
+    # ...existing edit logic...
+
+
+@router.put("/{document_id}/rename")
+async def rename_document(document_id: UUID, repository: DocumentMetadataRepository = Depends(get_repository)):
+    if await repository.is_document_archived(document_id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cannot rename archived document.")
+    # ...existing rename logic...
+
+
+@router.put("/{document_id}/star")
+async def toggle_starred(document_id: UUID, repository: DocumentMetadataRepository = Depends(get_repository)):
+    await repository.toggle_starred(document_id)
+    return {"message": "Starred status toggled successfully."}

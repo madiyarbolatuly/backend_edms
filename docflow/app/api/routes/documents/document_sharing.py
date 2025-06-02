@@ -166,7 +166,6 @@ async def share_document(
 
         return await repository.share_document(
             filename=get_document_metadata["name"],
-
             file=file,
             share_request=share_request,
             notify=notify,
