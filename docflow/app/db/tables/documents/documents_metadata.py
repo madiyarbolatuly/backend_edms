@@ -84,10 +84,10 @@ class DocumentMetadata(Base):
     access_to: Optional[List[str]] = Column(ARRAY(String))
     type = Column(String, default='file')  # 'file' or 'folder'
     parent_id = Column(UUID(as_uuid=True), ForeignKey('document_metadata.id'), nullable=True)
+    owner = relationship("User", back_populates="owner_of")
+    is_archived = Column(Boolean, nullable=False, default=False)
+    is_starred = Column(Boolean, nullable=False, default=False)
 
     update_access = relationship(
         "User", secondary=doc_user_access, passive_deletes=True
     )
-    owner = relationship("User", back_populates="owner_of")
-    is_archived = Column(Boolean, default=False, nullable=False, server_default="false")
-    is_starred = Column(Boolean, default=False, nullable=False, server_default="false")

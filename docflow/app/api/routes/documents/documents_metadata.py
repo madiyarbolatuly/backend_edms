@@ -201,16 +201,14 @@ async def delete_document_metadata(
 
 
 @router.post(
-    "/archive/{file_name)",
+    "/archive/{file_name}",
     response_model=DocumentMetadataRead,
     status_code=status.HTTP_200_OK,
     name="archive_a_document",
 )
-async def archive(
+async def archive_doc(
     file_name: str,
-    repository: DocumentMetadataRepository = Depends(
-        get_repository(DocumentMetadataRepository)
-    ),
+    repo: DocumentMetadataRepository = Depends(get_repository),
     user: TokenData = Depends(get_current_user),
 ) -> DocumentMetadataRead:
     """
@@ -226,7 +224,7 @@ async def archive(
 
     """
 
-    return await repository.archive(file=file_name, user=user)
+    return await repo.archive(file=file_name, user=user)
 
 
 @router.get(
@@ -235,10 +233,8 @@ async def archive(
     status_code=status.HTTP_200_OK,
     name="archived_doc_list",
 )
-async def archive_list(
-    repository: DocumentMetadataRepository = Depends(
-        get_repository(DocumentMetadataRepository)
-    ),
+async def list_archived(
+    repo: DocumentMetadataRepository = Depends(get_repository),
     user: TokenData = Depends(get_current_user),
 ) -> Dict[str, List[str] | int]:
     """
@@ -253,20 +249,18 @@ async def archive_list(
 
     """
 
-    return await repository.archive_list(user=user)
+    return await repo.archive_list(user=user)
 
 
 @router.post(
-    "/un-archive/{file}",
+    "/un-archive/{file_name}",
     response_model=DocumentMetadataRead,
     status_code=status.HTTP_200_OK,
     name="remove_doc_from_archive",
 )
-async def un_archive(
-    file: str,
-    repository: DocumentMetadataRepository = Depends(
-        get_repository(DocumentMetadataRepository)
-    ),
+async def unarchive_doc(
+    file_name: str,
+    repo: DocumentMetadataRepository = Depends(get_repository),
     user: TokenData = Depends(get_current_user),
 ) -> DocumentMetadataRead:
     """
@@ -282,7 +276,7 @@ async def un_archive(
 
     """
 
-    return await repository.un_archive(file=file, user=user)
+    return await repo.un_archive(file=file_name, user=user)
 
 
 @router.get("/v2/u/me", tags=["User"])
@@ -363,6 +357,6 @@ async def rename_document(document_id: UUID, repository: DocumentMetadataReposit
 
 
 @router.put("/{document_id}/star")
-async def toggle_starred(document_id: UUID, repository: DocumentMetadataRepository = Depends(get_repository)):
+async def toggle_star(document_id: UUID, repository: DocumentMetadataRepository = Depends(get_repository)):
     await repository.toggle_starred(document_id)
     return {"message": "Starred status toggled successfully."}

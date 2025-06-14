@@ -1,6 +1,6 @@
 import logging
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.ext.declarative import declarative_base
@@ -46,3 +46,8 @@ async def check_tables():
     except OperationalError as e:
         logger.error("Error Creating table: %s", e)
         raise http_500(msg="An error occurred while creating tables.") from e
+
+    # Update the document list query to exclude archived documents
+    from app.db.tables.documents.documents_metadata import DocumentMetadata
+
+    stmt = select(DocumentMetadata).where(DocumentMetadata.is_archived == False)

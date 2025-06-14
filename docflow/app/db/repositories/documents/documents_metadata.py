@@ -370,3 +370,36 @@ class DocumentMetadataRepository:
         stmt = update(DocumentMetadata).where(DocumentMetadata.id == document_id).values(is_starred=not is_starred)
         await self.session.execute(stmt)
         await self.session.commit()
+
+    async def archive(self, file: str, user: TokenData):
+        doc = await self._get_instance(document=file, owner=user)
+        if not doc:
+            raise http_404(msg="Document not found")
+        if doc.is_archived:
+            raise http_409(msg="Document is already archived")
+        doc.is_archived = True
+        await self.session.commit()
+        return DocumentMetadataRead.from_orm(doc)
+
+    async def un_archive(self, file: str, user: TokenData):
+        doc = await self._get_instance(document=file, owner=user)
+        if not doc:
+            raise http_404(msg="Document not found")
+        if not doc.is_archived:
+            raise http_409(msg="Document is not archived")
+        doc.is_archived = False
+        await self.session.commit()
+        return DocumentMetadataRead.from_orm(doc)
+
+    async def archive_list(self, user: TokenData):
+        stmt = select(DocumentMetadata).where(DocumentMetadata.owner_id == user.id).where(DocumentMetadata.is_archived == True)
+        result = (await self.session.execute(stmt)).scalars().all()
+        return {"documents": [DocumentMetadataRead.from_orm(doc) for doc in result], "count": len(result)}
+
+    async def toggle_starred(self, document_id: UUID, user: TokenData):
+        doc = await self._get_instance(document=document_id, owner=user)
+        if not doc:
+            raise http_404(msg="Document not found")
+        doc.is_starred = not doc.is_starred
+        await self.session.commit()
+        return {"message": "Starred status toggled successfully."}
