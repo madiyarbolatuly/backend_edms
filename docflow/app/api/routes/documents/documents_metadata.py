@@ -6,6 +6,9 @@ from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from pydantic import BaseModel
 from typing import Optional
+from pathlib import Path
+from fastapi import UploadFile, File
+from app.schemas.documents.documents_metadata import DocumentMetadataCreate, DocumentMetadataRead, FolderCreate
 
 from app.api.dependencies.repositories import get_repository
 from app.api.dependencies.auth_utils import get_current_user
@@ -16,10 +19,6 @@ from app.db.repositories.auth.auth import AuthRepository
 from app.db.repositories.documents.documents_metadata import DocumentMetadataRepository
 from app.schemas.auth.bands import TokenData
 from app.schemas.documents.bands import DocumentMetadataPatch
-from app.schemas.documents.documents_metadata import (
-    DocumentMetadataCreate,
-    DocumentMetadataRead,
-)
 
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/v2/u/login")
@@ -301,11 +300,6 @@ async def read_users_me(token: str = Depends(oauth2_scheme)):
     }
 
 
-class FolderCreate(BaseModel):
-    name: str
-    parent_id: Optional[UUID] = None
-
-
 @router.post(
     "/v2/metadata/upload",
     response_model=DocumentMetadataRead,
@@ -360,3 +354,35 @@ async def rename_document(document_id: UUID, repository: DocumentMetadataReposit
 async def toggle_star(document_id: UUID, repository: DocumentMetadataRepository = Depends(get_repository)):
     await repository.toggle_starred(document_id)
     return {"message": "Starred status toggled successfully."}
+
+
+@router.post("/upload-folder", response_model=List[DocumentMetadataRead], status_code=201)
+async def upload_folder(
+    files: List[UploadFile] = File(...),
+    repository: DocumentMetadataRepository = Depends(get_repository(DocumentMetadataRepository)),
+    user: TokenData = Depends(get_current_user)
+):
+    saved = []
+    for file in files:
+        path = Path(file.filename)
+        parent_id = None
+        # Create folder entries for each part of the path (except the file itself)
+        for folder_name in path.parts[:-1]:
+            existing = await repository._by_name_and_parent(folder_name, parent_id, user.id)
+            if existing is None:
+                folder_data = FolderCreate(name=folder_name, parent_id=parent_id)
+                new_folder = await repository.create_folder(owner_id=user.id, data=folder_data)
+                parent_id = new_folder.id
+            else:
+                parent_id = existing.id
+        # Now upload the file, passing parent_id as its folder
+        meta_in = DocumentMetadataCreate(
+            owner_id=user.id,
+            name=path.name,
+            file_path=str(path.parent) if str(path.parent) != '.' else None,
+            parent_id=parent_id,
+            type="file"
+        )
+        saved_meta = await repository.upload(document_upload=meta_in, file=file)
+        saved.append(saved_meta)
+    return saved

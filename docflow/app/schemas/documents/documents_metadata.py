@@ -11,6 +11,8 @@ class DocumentMetadataCreate(DocumentMetadataBase):
     owner_id: Optional[str] = None
     name: str
     file_path: Optional[str] = None
+    parent_id: Optional[UUID] = None
+    type: str = "file"
     access_to: Optional[List[str]] = None
 
 

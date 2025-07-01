@@ -3,17 +3,24 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from fastapi.openapi.utils import get_openapi
+from contextlib import asynccontextmanager
 import pathlib
 
 from app.api.router import router
 from app.core.config import settings
 from app.db.models import check_tables
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await check_tables()
+    yield
+
 app = FastAPI(
     title=settings.title,
     version=settings.version,
     description=settings.description,
     docs_url=settings.docs_url,
+    lifespan=lifespan,
 )
 
 # 1) CORS (for React dev on 3000/5173/8080)
@@ -49,7 +56,3 @@ FAVICON_PATH = "favicon.ico"
 @app.get(FAVICON_PATH, include_in_schema=False)
 async def favicon():
     return FileResponse(FAVICON_PATH)
-
-@app.on_event("startup")
-async def on_startup():
-    await check_tables()

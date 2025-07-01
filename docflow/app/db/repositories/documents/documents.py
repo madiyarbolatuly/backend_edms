@@ -1,7 +1,8 @@
 import logging
 import hashlib
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
+from uuid import UUID
 
 from fastapi import UploadFile
 from starlette.responses import FileResponse
@@ -17,6 +18,19 @@ from app.schemas.auth.bands import TokenData
 from ulid import ULID
 
 logger = logging.getLogger(__name__)
+
+
+class DocumentMetadataBase:
+    pass
+
+
+class DocumentMetadataCreate(DocumentMetadataBase):
+    owner_id: Optional[str] = None
+    name: str
+    file_path: Optional[str] = None
+    parent_id: Optional[UUID] = None
+    type: str = "file"
+    access_to: Optional[List[str]] = None
 
 
 class DocumentRepository:

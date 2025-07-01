@@ -403,3 +403,14 @@ class DocumentMetadataRepository:
         doc.is_starred = not doc.is_starred
         await self.session.commit()
         return {"message": "Starred status toggled successfully."}
+
+    async def get_folder_by_name_and_parent(self, name: str, parent_id: UUID, owner_id: str):
+        stmt = (
+            select(DocumentMetadata)
+            .where(DocumentMetadata.name == name)
+            .where(DocumentMetadata.parent_id == parent_id)
+            .where(DocumentMetadata.owner_id == owner_id)
+            .where(DocumentMetadata.type == "folder")
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
