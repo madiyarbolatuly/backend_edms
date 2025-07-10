@@ -10,11 +10,12 @@ from app.api.dependencies.repositories import get_repository
 from app.core.exceptions import http_404
 from app.db.repositories.auth.auth import AuthRepository
 from app.db.repositories.documents.documents import DocumentRepository
-from app.db.repositories.documents.documents_metadata import DocumentMetadataRepository
-from app.db.repositories.documents.document_sharing import DocumentSharingRepository
+from app.db.repositories.documents.documents_metadata import DocumentRepository
+from app.db.repositories.documents.document_sharing import SharedDocumentRepository
 from app.db.repositories.documents.notify import NotifyRepo
 from app.schemas.auth.bands import TokenData
 from app.schemas.documents.document_sharing import SharingRequest
+import os
 
 
 router = APIRouter(tags=["Document Sharing"])
@@ -26,12 +27,12 @@ router = APIRouter(tags=["Document Sharing"])
 async def share_link_document(
     document: Union[str, UUID],
     share_request: SharingRequest,
-    repository: DocumentSharingRepository = Depends(
-        get_repository(DocumentSharingRepository)
+    repository: SharedDocumentRepository = Depends(
+        get_repository(SharedDocumentRepository)
     ),
     auth_repository: AuthRepository = Depends(get_repository(AuthRepository)),
-    metadata_repository: DocumentMetadataRepository = Depends(
-        get_repository(DocumentMetadataRepository)
+    metadata_repository: DocumentRepository = Depends(
+        get_repository(DocumentRepository)
     ),
     notify_repository: NotifyRepo = Depends(get_repository(NotifyRepo)),
     user: TokenData = Depends(get_current_user),
@@ -43,9 +44,9 @@ async def share_link_document(
         document (Union[str, UUID]): The ID or name of the document to be shared.
         share_request (SharingRequest): The sharing request containing the
                 details of the sharing operation.
-        repository (DocumentSharingRepository): The repository for managing document sharing.
+        repository (SharedDocumentRepository): The repository for managing document sharing.
         auth_repository (AuthRepository): The repository for managing User-related queries.
-        metadata_repository (DocumentMetadataRepository): The repository for managing
+        metadata_repository (DocumentRepository): The repository for managing
             document metadata.
         notify_repository (NotifyRepo): The repository for managing notification
         user (TokenData): The token data of the authenticated user.
@@ -60,14 +61,14 @@ async def share_link_document(
     try:
         doc = await metadata_repository.get(document=document, owner=user)
 
-        visits = share_request.visits
         share_to = share_request.share_to
+        expires_at = share_request.expires_at
         personal_url = f"{settings.host_url}/uploads/{doc.name}"
 
-        shareable_link = await repository.get_shareable_link(
+        shareable_link = await repository.create_share_link(
             owner_id=user.id,
             filename=doc.__dict__["name"],
-            visits=visits,
+            expires_at=expires_at,
             share_to=share_to,
         )
 
@@ -92,8 +93,8 @@ async def share_link_document(
 @router.get("/doc/{url_id}", tags=["Document Sharing"])
 async def redirect_to_share(
     url_id: str,
-    repository: DocumentSharingRepository = Depends(
-        get_repository(DocumentSharingRepository)
+    repository: SharedDocumentRepository = Depends(
+        get_repository(SharedDocumentRepository)
     ),
     user: TokenData = Depends(get_current_user),
 ):
@@ -102,7 +103,7 @@ async def redirect_to_share(
 
     Args:
         url_id (str): The ID of the shared document URL.
-        repository (DocumentSharingRepository): The repository for managing document sharing.
+        repository (SharedDocumentRepository): The repository for managing document sharing.
         user (TokenData): The token data of the authenticated user.
 
     Returns:
@@ -120,13 +121,9 @@ async def share_document(
     document: Union[str, UUID],
     share_request: SharingRequest,
     notify: bool = True,
-    repository: DocumentSharingRepository = Depends(
-        get_repository(DocumentSharingRepository)
-    ),
-    document_repo: DocumentRepository = Depends(DocumentRepository),
-    metadata_repo: DocumentMetadataRepository = Depends(
-        get_repository(DocumentMetadataRepository)
-    ),
+    repository: SharedDocumentRepository = Depends(get_repository(SharedDocumentRepository)),
+    document_repo: DocumentRepository = Depends(get_repository(DocumentRepository)),
+    metadata_repo: DocumentRepository = Depends(get_repository(DocumentRepository)),
     notify_repo: NotifyRepo = Depends(get_repository(NotifyRepo)),
     auth_repo: AuthRepository = Depends(get_repository(AuthRepository)),
     user: TokenData = Depends(get_current_user),
@@ -138,10 +135,10 @@ async def share_document(
     document (Union[str, UUID]): The ID or UUID of the document to be shared.
     share_request (SharingRequest): The sharing request containing the recipients and permissions.
     notify (bool, optional): Whether to send notifications to the recipients. Defaults to True.
-    repository (DocumentSharingRepository, optional): The repository for document sharing
+    repository (SharedDocumentRepository, optional): The repository for document sharing
         operations.
     document_repo (DocumentRepository, optional): The repository for document operations.
-    metadata_repo (DocumentMetadataRepository, optional): The repository for document metadata
+    metadata_repo (DocumentRepository, optional): The repository for document metadata
         operations.
     notify_repo (NotifyRepo, optional): The repository for notification operations.
     auth_repo (AuthRepository, optional): The repository for authentication operations.
@@ -163,15 +160,15 @@ async def share_document(
 
         filepath = os.path.join(settings.upload_dir, get_document_metadata["name"])
 
-
-        return await repository.share_document(
-            filename=get_document_metadata["name"],
-            file=file,
-            share_request=share_request,
-            notify=notify,
-            owner=user,
-            notify_repo=notify_repo,
-            auth_repo=auth_repo,
-        )
+        with open(filepath, "rb") as file:
+            return await repository.share_document(
+                filename=get_document_metadata["name"],
+                file=file,
+                share_request=share_request,
+                notify=notify,
+                owner=user,
+                notify_repo=notify_repo,
+                auth_repo=auth_repo,
+            )
     except Exception as e:
         raise http_404() from e

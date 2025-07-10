@@ -45,7 +45,7 @@ class AuthRepository:
         hashed_password = get_hashed_password(password=userdata.password)
         userdata.password = hashed_password
 
-        new_user = User(**userdata.model_dump())
+        new_user = User(**userdata.model_dump(exclude_unset=True))
 
         self.session.add(new_user)
         await self.session.commit()

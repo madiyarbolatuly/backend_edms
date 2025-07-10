@@ -3,7 +3,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 
 from app.api.dependencies.auth_utils import get_current_user
 from app.api.dependencies.repositories import get_repository
-from app.schemas.auth.bands import UserOut, UserAuth, TokenData
+from app.schemas.auth.bands import UserOut, UserAuth, Token, TokenData
 from app.db.repositories.auth.auth import AuthRepository
 
 router = APIRouter(tags=["User Auth"])
@@ -28,6 +28,7 @@ async def signup(
     status_code=status.HTTP_200_OK,
     name="login",
     summary="Create access and refresh tokens for user",
+    response_model=Token,
     
 )
 async def login(

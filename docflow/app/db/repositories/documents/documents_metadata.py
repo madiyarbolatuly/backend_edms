@@ -1,17 +1,16 @@
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Union
 from uuid import UUID
-
+from app.db.tables.documents.versions import DocumentVersion    
 from fastapi import HTTPException
 from sqlalchemy import select, update, insert, delete
 from sqlalchemy.engine import Row
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
-
 from app.core.exceptions import http_409, http_404
 from app.db.repositories.auth.auth import AuthRepository
-from app.db.tables.documents.documents_metadata import DocumentMetadata, doc_user_access
+from app.db.tables.documents.documents import Document
 from app.db.tables.base_class import StatusEnum
 from app.schemas.auth.bands import TokenData
 from app.schemas.documents.bands import DocumentMetadataPatch
@@ -19,11 +18,14 @@ from app.schemas.documents.documents_metadata import (
     DocumentMetadataCreate,
     DocumentMetadataRead,
 )
+from app.db.tables.documents.documents import Document
+
 from app.schemas.documents.documents_metadata import FolderCreate, FolderRead
+from app.db.tables.documents.permissions import Permission, AccessLevel
 
 
 
-class DocumentMetadataRepository:
+class DocumentRepository:
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
@@ -37,14 +39,15 @@ class DocumentMetadataRepository:
                 select(self.doc_cls)
                 .where(self.doc_cls.owner_id == owner.id)
                 .where(self.doc_cls.id == document)
-                .where(self.doc_cls.status != StatusEnum.deleted)
+                .where(Document.deleted_at.isnot(None))
             )
         except ValueError:
             stmt = (
                 select(self.doc_cls)
                 .where(self.doc_cls.owner_id == owner.id)
                 .where(self.doc_cls.name == document)
-                .where(self.doc_cls.status != StatusEnum.deleted)
+                # .where(self.doc_cls.status != StatusEnum.deleted)
+                .where(Document.deleted_at.isnot(None))
             )
 
         result = await self.session.execute(stmt)
@@ -59,8 +62,8 @@ class DocumentMetadataRepository:
         return document_patch.model_dump(exclude_unset=True)
 
     async def _execute_update(
-        self, db_document: DocumentMetadata | Dict[str, Any], changes: dict
-    ) -> None:
+        self, db_document: Document | Dict[str, Any], changes: dict
+    ) -> Document:
 
         if isinstance(db_document, dict):
             stmt = (
@@ -129,7 +132,8 @@ class DocumentMetadataRepository:
         stmt = (
             select(DocumentMetadata)
             .where(DocumentMetadata.name == filename)
-            .where(self.doc_cls.status != StatusEnum.deleted)
+            .where(Document.deleted_at.isnot(None))
+            #.where(self.doc_cls.status != StatusEnum.deleted)
         )
         result = await self.session.execute(stmt)
         result.fetchall()
@@ -224,17 +228,18 @@ class DocumentMetadataRepository:
         try:
             db_document = await self._get_instance(document=document, owner=owner)
 
-            setattr(db_document, "status", StatusEnum.deleted)
-            setattr(db_document, "tags", None)
-            setattr(db_document, "access_to", None)
-            setattr(db_document, "file_type", None)
-            setattr(db_document, "categories", None)
-            # considering created_at as delete_at to delete it after 30 days
-            setattr(
-                db_document,
-                "created_at",
-                datetime.now(timezone.utc) + timedelta(days=30),
-            )
+            # setattr(db_document, "status", StatusEnum.deleted)
+            # setattr(db_document, "tags", None)
+            # setattr(db_document, "access_to", None)
+            # setattr(db_document, "file_type", None)
+            # setattr(db_document, "categories", None)
+            # # considering created_at as delete_at to delete it after 30 days
+            # setattr(
+            #     db_document,
+            #     "created_at",
+            #     datetime.now(timezone.utc) + timedelta(days=30),
+            # )
+            db_document.deleted_at = datetime.now(timezone.utc) 
 
             # delete entry from doc_user_access table
             await self._delete_access(document=db_document)
@@ -358,16 +363,16 @@ class DocumentMetadataRepository:
         await self.session.commit()
 
     async def is_document_archived(self, document_id: UUID) -> bool:
-        stmt = select(DocumentMetadata.is_archived).where(DocumentMetadata.id == document_id)
+        stmt = select(Document.is_archived).where(DocumentMetadata.id == document_id)
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
-    async def toggle_starred(self, document_id: UUID):
-        stmt = select(DocumentMetadata.is_starred).where(DocumentMetadata.id == document_id)
+    async def toggle_favourited(self, document_id: UUID):
+        stmt = select(Document.is_favourited).where(DocumentMetadata.id == document_id)
         result = await self.session.execute(stmt)
-        is_starred = result.scalar_one_or_none()
+        is_favourited = result.scalar_one_or_none()
 
-        stmt = update(DocumentMetadata).where(DocumentMetadata.id == document_id).values(is_starred=not is_starred)
+        stmt = update(DocumentMetadata).where(DocumentMetadata.id == document_id).values(is_favourited=not is_favourited)
         await self.session.execute(stmt)
         await self.session.commit()
 
@@ -392,17 +397,17 @@ class DocumentMetadataRepository:
         return DocumentMetadataRead.from_orm(doc)
 
     async def archive_list(self, user: TokenData):
-        stmt = select(DocumentMetadata).where(DocumentMetadata.owner_id == user.id).where(DocumentMetadata.is_archived == True)
+        stmt = select(DocumentMetadata).where(DocumentMetadata.owner_id == user.id).where(Document.is_archived == True)
         result = (await self.session.execute(stmt)).scalars().all()
         return {"documents": [DocumentMetadataRead.from_orm(doc) for doc in result], "count": len(result)}
 
-    async def toggle_starred(self, document_id: UUID, user: TokenData):
+    async def toggle_favourited(self, document_id: UUID, user: TokenData):
         doc = await self._get_instance(document=document_id, owner=user)
         if not doc:
             raise http_404(msg="Document not found")
-        doc.is_starred = not doc.is_starred
+        doc.is_favourited = not doc.is_favourited
         await self.session.commit()
-        return {"message": "Starred status toggled successfully."}
+        return {"message": "favourited status toggled successfully."}
 
     async def get_folder_by_name_and_parent(self, name: str, parent_id: UUID, owner_id: str):
         stmt = (
@@ -414,3 +419,14 @@ class DocumentMetadataRepository:
         )
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def get_folder_by_id(self, folder_id: UUID, owner_id: str):
+        stmt = (
+            select(DocumentMetadata)
+            .where(DocumentMetadata.id == folder_id)
+            .where(DocumentMetadata.parent_id == None )
+            .where(DocumentMetadata.owner_id == owner_id)
+            .where(DocumentMetadata.type == "folder")
+            .where(DocumentMetadata.status != StatusEnum.deleted
+            )  # Ensure the folder is not deleted   
+        )

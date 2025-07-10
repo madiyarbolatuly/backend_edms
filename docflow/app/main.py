@@ -9,6 +9,8 @@ import pathlib
 from app.api.router import router
 from app.core.config import settings
 from app.db.models import check_tables
+from app.api.routes import auth, documents, folders, sharing, notifications, documents
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -23,15 +25,14 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# 1) CORS (for React dev on 3000/5173/8080)
 app.add_middleware(
-    CORSMiddleware,
+    CORSMiddleware, 
     allow_origins=["http://localhost:5173", "http://localhost:3000", "http://localhost:8080", "http://localhost:8081"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )  # :contentReference[oaicite:5]{index=5}
 
-# 2) Mount uploads folder BEFORE React SPA
 uploads_path = pathlib.Path(__file__).parent.parent / "uploads"
 app.mount(
     "/files",
@@ -39,19 +40,22 @@ app.mount(
     name="files",
 )  # :contentReference[oaicite:6]{index=6}
 
-# 3) Include your API routers
-app.include_router(router=router, prefix=settings.api_prefix)
+app.include_router(router, prefix=settings.api_prefix)
+app.include_router(documents.router, prefix="/documents", tags=["Documents"])
+app.include_router(folders.router, prefix="/folders", tags=["Folders"])
+app.include_router(sharing.router, prefix="/sharing", tags=["Sharing"])
+app.include_router(notifications.router, prefix="/notifications", tags=["Notifications"])
 
-# 4) Mount React build as catch-all
+
 frontend_build = pathlib.Path(__file__).parent / "frontend" / "dist"
 if frontend_build.exists():
     app.mount(
         "/",
         StaticFiles(directory=str(frontend_build), html=True),
         name="frontend",
+        title=settings.title,
     )  # :contentReference[oaicite:7]{index=7}
 
-# 5) Favicon and root for OpenAPI
 FAVICON_PATH = "favicon.ico"
 @app.get(FAVICON_PATH, include_in_schema=False)
 async def favicon():

@@ -4,21 +4,21 @@ from uuid import UUID
 
 from app.api.dependencies.auth_utils import get_current_user
 from app.api.dependencies.repositories import get_repository
-from app.db.repositories.documents.documents_metadata import DocumentMetadataRepository
-from app.schemas.documents.documents_metadata import FolderCreate, FolderRead
+from app.db.repositories.documents.documents_metadata import DocumentRepository
+from app.schemas.documents.documents_metadata import FolderCreate, DocumentMetadataRead
 
 router = APIRouter(tags=["Folders"], prefix="/folders")
 
 @router.post(
     "",
-    response_model=FolderRead,
+    response_model=DocumentMetadataRead,
     status_code=status.HTTP_201_CREATED,
     summary="Create a new folder",
 )
 async def create_folder(
     data: FolderCreate,
     current_user=Depends(get_current_user),
-    repo: DocumentMetadataRepository = Depends(get_repository(DocumentMetadataRepository))
+    repo: DocumentRepository = Depends(get_repository(DocumentRepository))
 ):
     """
     Create a folder under an optional parent folder.
@@ -27,13 +27,13 @@ async def create_folder(
 
 @router.get(
     "/{parent_id}/children",
-    response_model=List[FolderRead],
+    response_model=List[DocumentMetadataRead],
     summary="List items in a folder",
 )
 async def list_folder_children(
     parent_id: UUID,
     current_user=Depends(get_current_user),
-    repo: DocumentMetadataRepository = Depends(get_repository(DocumentMetadataRepository)),
+    repo: DocumentRepository = Depends(get_repository(DocumentRepository)),
 ):
     """
     List folders and files inside the specified folder.

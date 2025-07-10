@@ -1,27 +1,37 @@
-from sqlalchemy import Column, String, Text, TIMESTAMP
-from sqlalchemy.orm import relationship
-from sqlalchemy.sql.expression import text
+from datetime import datetime, timezone
 
+from sqlalchemy import (
+    Column, String, Integer, Boolean, DateTime,
+    Enum as SQLEnum, ForeignKey
+)
+from sqlalchemy.orm import relationship
 from app.api.dependencies.repositories import get_ulid
-from app.db.models import Base
+from app.db.base import Base
+from enum import Enum as PyEnum      # import the *real* Enum
+from app.api.dependencies.repositories import get_ulid
+
+class UserRole(str, PyEnum):
+    admin  = "admin"
+    editor = "editor"
+    viewer = "viewer"
 
 
 class User(Base):
     __tablename__ = "users"
 
-    id = Column(
-        String(26),
-        primary_key=True,
-        default=get_ulid,
-        unique=True,
-        index=True,
-        nullable=False,
-    )
-    username: str = Column(String, unique=True, nullable=False)
-    email = Column(String, unique=True, nullable=False)
-    password = Column(Text, nullable=False)
-    user_since = Column(
-        TIMESTAMP(timezone=True), nullable=False, server_default=text("now()")
-    )
+    id             = Column(String(26), primary_key=True, default=get_ulid, unique=True)
+    tenant_id      = Column(Integer, ForeignKey("tenants.id"), nullable=False)
+    department_id  = Column(Integer, ForeignKey("departments.id"), nullable=False)
 
-    owner_of = relationship("DocumentMetadata", back_populates="owner")
+    username       = Column(String, unique=True, nullable=False)
+    email          = Column(String, unique=True, nullable=False)
+    password       = Column(String, nullable=False)      # store **hash**
+    role           = Column(SQLEnum(UserRole), nullable=False, default=UserRole.viewer)
+
+    is_active      = Column(Boolean, default=True, nullable=False)
+    created_at     = Column(DateTime(timezone=True),
+                            nullable=False,
+                            default=datetime.now(timezone.utc))
+
+    documents      = relationship("Document", back_populates="owner")
+

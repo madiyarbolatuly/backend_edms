@@ -3,24 +3,25 @@ from typing import Optional, List
 from uuid import UUID
 
 from pydantic import BaseModel
-
 from app.db.tables.base_class import StatusEnum, NotifyEnum
 
 
 # Document Metadata
 class DocumentMetadataBase(BaseModel):
     id: UUID
+    tenant_id: int                
+    department_id: int             
     owner_id: str
     name: str
     file_path: str
     created_at: datetime
+    deleted_at: Optional[datetime] = None   #(trash)
     size: Optional[int]
     file_type: Optional[str]
+    is_archived: bool = False     
+    is_favourited: bool = False    #(renamed from starred)
     tags: Optional[List[str]]
-    categories: Optional[List[str]]
     status: StatusEnum
-    file_hash: Optional[str]
-    access_to: Optional[List[str]]
     parent_id: Optional[UUID] = None
 
     class Config:

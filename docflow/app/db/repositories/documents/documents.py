@@ -11,9 +11,12 @@ from app.api.dependencies.constants import SUPPORTED_FILE_TYPES
 from app.api.dependencies.repositories import get_file_path
 from app.core.config import settings
 from app.core.exceptions import http_400, http_404
-from app.db.repositories.documents.documents_metadata import DocumentMetadataRepository
-from app.db.repositories.auth.auth import AuthRepository
 from app.db.repositories.documents.notify import NotifyRepo
+from app.db.tables.documents.documents import Document
+from app.db.tables.documents.versions import DocumentVersion
+from app.db.repositories.auth.auth import AuthRepository
+from app.db.repositories.documents.documents_metadata import DocumentRepository
+
 from app.schemas.auth.bands import TokenData
 from ulid import ULID
 
@@ -30,8 +33,7 @@ class DocumentMetadataCreate(DocumentMetadataBase):
     file_path: Optional[str] = None
     parent_id: Optional[UUID] = None
     type: str = "file"
-    access_to: Optional[List[str]] = None
-
+    pass
 
 class DocumentRepository:
     """
@@ -53,27 +55,46 @@ class DocumentRepository:
 
     async def _upload_new_file(
         self,
+        metadata_repo: DocumentRepository,
         file: UploadFile,
         folder: Optional[str],
         contents: bytes,
         file_type: str,
         user: TokenData,
     ) -> Dict[str, Any]:
-        # Build user-specific subfolder path
+        
         rel_folder = Path(user.id) / folder if folder else Path(user.id)
         abs_folder = self.upload_root / rel_folder
         abs_folder.mkdir(parents=True, exist_ok=True)
 
-        # Generate a unique on-disk filename
         extension = SUPPORTED_FILE_TYPES[file_type]
         disk_filename = f"{ULID()}.{extension}"
         abs_path = abs_folder / disk_filename
 
-        # Write the bytes to disk
         abs_path.write_bytes(contents)
         logger.info("Saved new file to %s", abs_path)
 
         rel_path = str(rel_folder / disk_filename)
+        new_doc = Document(
+            tenant_id=user.tenant_id,
+            department_id=user.department_id,
+            owner_id=user.id,
+            name=file.filename,
+            file_path=rel_path,
+            document_number=str(ULID()),
+        )
+        metadata_repo.session.add(new_doc)
+        await metadata_repo.session.flush()
+
+        metadata_repo.session.add(
+            DocumentVersion(
+                document_id=new_doc.id,
+                version_number=1,
+                file_path=rel_path,
+            )
+        )
+        
+
         return {
             "response": "file_added",
             "upload": {
@@ -115,7 +136,7 @@ class DocumentRepository:
 
     async def upload(
         self,
-        metadata_repo: DocumentMetadataRepository,
+        metadata_repo: DocumentRepository,
         user_repo: AuthRepository,
         file: UploadFile,
         folder: Optional[str],
@@ -153,8 +174,8 @@ class DocumentRepository:
 
         except Exception:
             # not found → brand-new upload
-            logger.info("Uploading new file %s for user %s", file.filename, user.id)
             return await self._upload_new_file(
+                metadata_repo=metadata_repo,
                 file=file,
                 folder=folder,
                 contents=contents,

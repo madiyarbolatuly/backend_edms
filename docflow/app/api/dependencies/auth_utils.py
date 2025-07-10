@@ -39,6 +39,9 @@ def create_access_token(
         "exp": expires_delta,
         "id": subject.get("id"),
         "username": subject.get("username"),
+        "role": subject.get("role"),
+        "tenant_id": subject.get("tenant_id"),
+        "department_id": subject.get("department_id"),
     }
 
     return jwt.encode(to_encode, settings.jwt_secret_key, settings.algorithm)
@@ -58,6 +61,9 @@ def create_refresh_token(
         "exp": expires_delta,
         "id": subject.get("id"),
         "username": subject.get("username"),
+        "role": subject.get("role"),
+        "tenant_id": subject.get("tenant_id"),
+        "department_id": subject.get("department_id"),
     }
 
     return jwt.encode(to_encode, settings.jwt_secret_key, settings.algorithm)
@@ -70,9 +76,17 @@ def verify_access_token(token: str, credentials_exception):
         )
         uid = payload.get("id")
         username = payload.get("username")
+        role = payload.get("role")
+        tenant_id = payload.get("tenant_id")
+        department_id = payload.get("department_id")
         if username is None:
             raise credentials_exception
-        token_data = TokenData(id=uid, username=username)
+        token_data = TokenData(
+            id=uid, 
+            username=username,
+            role=role, 
+            tenant_id=tenant_id, 
+            department_id=department_id)
     except JWTError as e:
         raise credentials_exception from e
 

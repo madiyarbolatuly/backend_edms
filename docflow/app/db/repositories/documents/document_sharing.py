@@ -14,14 +14,14 @@ from app.api.dependencies.repositories import get_file_path
 from app.core.config import settings
 from app.core.exceptions import http_404, http_500
 from app.db.tables.auth.auth import User
-from app.db.tables.documents.document_sharing import DocumentSharing
+from app.db.tables.documents.shared import SharedDocument
 from app.db.repositories.auth.auth import AuthRepository
 from app.db.repositories.documents.notify import NotifyRepo
 from app.schemas.auth.bands import TokenData
 from app.schemas.documents.document_sharing import SharingRequest
 
 
-class DocumentSharingRepository:
+class SharedDocumentRepository:
     """
     Repository for managing document‐sharing records and links
     on the local filesystem.
@@ -50,38 +50,24 @@ class DocumentSharingRepository:
         offset = randint(0, len(digest) - 6)
         return digest[offset : offset + 6]
 
-    async def _get_saved_link(self, filename: str) -> Optional[DocumentSharing]:
+    async def _get_saved_link(self, filename: str) -> Optional[SharedDocument]:
         """
         Check if there’s already a sharing entry for this filename.
         """
-        stmt = select(DocumentSharing).where(DocumentSharing.filename == filename)
+        stmt = select(SharedDocument).where(SharedDocument.filename == filename)
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
-
-    async def update_visits(self, filename: str, visits_left: int) -> None:
-        """
-        Decrement visits count, or delete the entry if no visits remain.
-        """
-        if visits_left > 1:
-            stmt = (
-                update(DocumentSharing)
-                .where(DocumentSharing.filename == filename)
-                .values(visits=visits_left - 1)
-            )
-        else:
-            stmt = delete(DocumentSharing).where(DocumentSharing.filename == filename)
-        await self.session.execute(stmt)
 
     async def cleanup_expired_links(self) -> None:
         """
         Purge any sharing entries whose expiry has passed.
         """
         now = datetime.now(timezone.utc)
-        stmt = delete(DocumentSharing).where(DocumentSharing.expires_at <= now)
+        stmt = delete(SharedDocument).where(SharedDocument.expires_at <= now)
         await self.session.execute(stmt)
 
     async def get_shareable_link(
-        self, owner_id: str, filename: str, visits: int, share_to: List[str]
+        self, owner_id: str, filename: str, visits: int, share_to: List[str], expires_at: Optional[datetime] = None
     ) -> Dict[str, Any]:
         """
         Return an existing link (if still valid), or create a new one.
@@ -105,8 +91,13 @@ class DocumentSharingRepository:
 
         # 3) Otherwise, create a new sharing entry
         url_id = await self._generate_id(filename)
-        expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
-        share_entry = DocumentSharing(
+        expires_at = (
+            expires_at
+            if expires_at
+            else datetime.now(timezone.utc) + timedelta(days=7)
+        )
+
+        share_entry = SharedDocument(
             url_id=url_id,
             owner_id=owner_id,
             filename=filename,
@@ -135,7 +126,7 @@ class DocumentSharingRepository:
         Look up the real file URL for a share link, decrement visits,
         or 404 if expired/invalid.
         """
-        stmt = select(DocumentSharing).where(DocumentSharing.url_id == url_id)
+        stmt = select(SharedDocument).where(SharedDocument.url_id == url_id)
         result = await self.session.execute(stmt)
         record = result.scalar_one_or_none()
 
@@ -145,7 +136,6 @@ class DocumentSharingRepository:
             )
 
         # decrement or delete
-        await self.update_visits(record.filename, record.visits)
         return record.url
 
     async def send_mail(
@@ -181,7 +171,7 @@ class DocumentSharingRepository:
         """
         Check whether the logged-in user is allowed to follow the share link.
         """
-        stmt = select(DocumentSharing).where(DocumentSharing.url_id == url_id)
+        stmt = select(SharedDocument).where(SharedDocument.url_id == url_id)
         result = await self.session.execute(stmt)
         record = result.scalar_one_or_none()
         if not record:

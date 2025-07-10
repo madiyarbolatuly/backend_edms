@@ -11,3 +11,8 @@ Following features are to be added and open for contributions:
 - 🟨 Bulk file importer
 - ⭕ Group Share : Share a document to a group of users Needs: Group creation
 - ⭕ Shared file history: History of all the shared files
+- Linked list Stacks Pop psuh copy initialize destructor
+Queues also
+Deque Doubly linked list
+INsert after insertbefore
+remove

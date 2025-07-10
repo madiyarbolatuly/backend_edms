@@ -16,7 +16,7 @@
  type        | character varying        |           |          | 
  parent_id   | uuid                     |           |          | 
  is_archived | boolean                  |           | not null | false
- is_starred  | boolean                  |           | not null | false
+ is_favourited| boolean                  |           | not null | false
 Indexes:
     "document_metadata_pkey" PRIMARY KEY, btree (id)
     "ix_document_metadata_id" btree (id)

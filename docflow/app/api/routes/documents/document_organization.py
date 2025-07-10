@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, status, Query
 
 from app.api.dependencies.repositories import get_repository
 from app.api.dependencies.auth_utils import get_current_user
-from app.db.repositories.documents.documents_metadata import DocumentMetadataRepository
+from app.db.repositories.documents.documents_metadata import DocumentRepository
 from app.db.repositories.documents.document_organization import DocumentOrgRepository
 from app.schemas.auth.bands import TokenData
 
@@ -23,8 +23,8 @@ async def search_document(
     file_types: str = None,
     doc_status: str = None,
     repository: DocumentOrgRepository = Depends(DocumentOrgRepository),
-    repository_metadata: DocumentMetadataRepository = Depends(
-        get_repository(DocumentMetadataRepository)
+    repository_metadata: DocumentRepository = Depends(
+        get_repository(DocumentRepository)
     ),
     user: TokenData = Depends(get_current_user),
 ):
@@ -39,7 +39,7 @@ async def search_document(
         file_types (str, optional): The file types to filter documents by. Defaults to None.
         doc_status (str, optional): The status of documents to filter by. Defaults to None.
         repository (DocumentOrgRepository): The repository for managing document organization.
-        repository_metadata (DocumentMetadataRepository): The repository for managing
+        repository_metadata (DocumentRepository): The repository for managing
             document metadata.
         user (TokenData): The token data of the authenticated user.
 
@@ -57,7 +57,6 @@ async def search_document(
     return await repository.search_doc(
         docs=doc_list,
         tags=tag,
-        categories=category,
         file_types=file_types,
         status=doc_status,
     )

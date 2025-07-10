@@ -7,14 +7,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import http_500, http_409, http_404
 from app.db.repositories.auth.auth import AuthRepository
 from app.db.tables.base_class import NotifyEnum
-from app.db.tables.documents.notify import Notify
 from app.schemas.auth.bands import TokenData
+from app.db.tables.documents.notify import Notify
 from app.schemas.documents.bands import Notification, NotifyPatchStatus
-
 
 class NotifyRepo:
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession ) -> None:
         self.session = session
 
     async def notify(

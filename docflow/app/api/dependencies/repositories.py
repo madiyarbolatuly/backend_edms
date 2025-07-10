@@ -52,13 +52,22 @@ def get_ulid() -> str:
 
 # ─── 6) (Optional) Save an uploaded file to disk ───────────────────────────────
 
-async def save_upload_file(upload_file: UploadFile) -> str:
+async def save_upload_file(
+        upload_file: UploadFile,
+        tenant_id: int,
+        department_id: int,
+        sub_folder: str | None = None,
+    ) -> str:
     """
     Write the incoming UploadFile into UPLOAD_DIR and
     return the stored filename.
     """
     filename = f"{get_ulid()}_{upload_file.filename}"
-    dest = UPLOAD_DIR / filename
+    dest = UPLOAD_DIR / str(tenant_id) / str(department_id)
+    if sub_folder:
+        dest_dir = dest_dir / sub_folder
+    dest.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / filename
 
     try:
         with dest.open("wb") as buffer:
@@ -68,7 +77,7 @@ async def save_upload_file(upload_file: UploadFile) -> str:
     finally:
         upload_file.file.close()
 
-    return filename
+    return str(dest.relative_to(UPLOAD_DIR))
 
 
 # ─── 7) Resolve a stored filename to its Path ─────────────────────────────────

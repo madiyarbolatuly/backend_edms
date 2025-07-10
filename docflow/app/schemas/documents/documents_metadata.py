@@ -8,13 +8,15 @@ from app.schemas.documents.bands import DocumentMetadataBase
 
 
 class DocumentMetadataCreate(DocumentMetadataBase):
+    tenant_id: int
+    department_id: int
     owner_id: Optional[str] = None
     name: str
     file_path: Optional[str] = None
     parent_id: Optional[UUID] = None
     type: str = "file"
-    access_to: Optional[List[str]] = None
-
+    is_archived: bool = False
+    is_favourited: bool = False
 
 class DocumentMetadataRead(DocumentMetadataBase):
     id: UUID
