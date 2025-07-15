@@ -26,9 +26,10 @@ class Document(Base):
 
     owner_id        = Column(String(26), ForeignKey("users.id"), nullable=False)
     owner           = relationship("User", back_populates="documents")
-
+    file_type        = Column(String(32), nullable=False, server_default="file")
     document_number = Column(String, nullable=False, unique=True)
     title           = Column(String, nullable=False)
+    name           = Column(String, nullable=False, unique=True)  # file name
     status          = Column(SQLEnum(DocStatus), nullable=False, default=DocStatus.draft)
     file_path       = Column(String, nullable=False)     # local FS path
 

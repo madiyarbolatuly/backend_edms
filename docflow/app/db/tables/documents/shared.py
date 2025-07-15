@@ -1,7 +1,7 @@
 # shared.py   (replaces old share_url)
 from datetime import datetime, timezone
 from sqlalchemy import Column, Integer, String, DateTime, ForeignKey
-from app.db.base import Base
+from app.db.models import Base
 
 
 class SharedDocument(Base):

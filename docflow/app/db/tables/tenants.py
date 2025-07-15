@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 from sqlalchemy import Column, Integer, String, DateTime
-from app.db.base import Base
+from app.db.models import Base
 
 
 class Tenant(Base):

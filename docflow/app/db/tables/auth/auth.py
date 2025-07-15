@@ -5,11 +5,10 @@ from sqlalchemy import (
     Enum as SQLEnum, ForeignKey
 )
 from sqlalchemy.orm import relationship
-from app.api.dependencies.repositories import get_ulid
 from app.db.base import Base
 from enum import Enum as PyEnum      # import the *real* Enum
-from app.api.dependencies.repositories import get_ulid
 
+from app.core.utils import get_ulid
 class UserRole(str, PyEnum):
     admin  = "admin"
     editor = "editor"

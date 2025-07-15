@@ -138,7 +138,7 @@ share_request (SharingRequest): The sharing request containing the recipients an
 notify (bool, optional): Whether to send notifications to the recipients. Defaults to True.
 repository (DocumentSharingRepository, optional): The repository for document sharing operations.
 document_repo (DocumentRepository, optional): The repository for document operations.
-metadata_repo (DocumentRepository, optional): The repository for document metadata operations.
+metadata_repository (DocumentRepository, optional): The repository for document metadata operations.
 notify_repo (NotifyRepo, optional): The repository for notification operations.
 auth_repo (AuthRepository, optional): The repository for authentication operations.
 user (TokenData, optional): The authenticated user.

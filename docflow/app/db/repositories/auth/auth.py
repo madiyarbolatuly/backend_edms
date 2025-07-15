@@ -57,21 +57,30 @@ class AuthRepository:
         user = await self.get_user(field="username", detail=ipdata.username)
         if user is None:
             raise http_403(msg="Recheck the credentials")
-        user = user.__dict__
-        hashed_password = user.get("password")
+        user_dict = user.__dict__
+        hashed_password = user_dict.get("password")
         if not verify_password(
             password=ipdata.password, hashed_password=hashed_password
         ):
             raise http_403("Incorrect Password")
 
+        payload = {
+            "id": user_dict.get("id"),
+            "username": user_dict.get("username"),
+            "role": user_dict.get("role"),
+            "tenant_id": user_dict.get("tenant_id"),
+            "department_id": user_dict.get("department_id"),
+        }
+
         return {
             "token_type": "bearer",
             "access_token": create_access_token(
-                subject={"id": user.get("id"), "username": user.get("username")}
+                subject=payload
             ),
             "refresh_token": create_refresh_token(
-                subject={"id": user.get("id"), "username": user.get("username")}
+                subject=payload
             ),
+            
         }
 
     async def get_user_by_id(self, user_id: str):

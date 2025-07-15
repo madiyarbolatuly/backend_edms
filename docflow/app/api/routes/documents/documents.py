@@ -5,16 +5,23 @@ from pathlib import Path
 from fastapi import APIRouter, status, File, UploadFile, Depends
 from fastapi.responses import FileResponse
 from sqlalchemy.engine import Row
-
+from typing import Any, Dict
 from app.api.dependencies.auth_utils import get_current_user
 from app.api.dependencies.repositories import get_repository, get_file_path
 from app.core.exceptions import http_400, http_404
 from app.db.repositories.auth.auth import AuthRepository
 from app.db.repositories.documents.documents import DocumentRepository
-from app.db.repositories.documents.documents_metadata import DocumentRepository
+from app.db.repositories.documents.documents_metadata import MetadataRepository 
 from app.schemas.auth.bands import TokenData
 from app.schemas.documents.documents_metadata import DocumentMetadataRead
 from app.schemas.documents.document_sharing import SharingRequest
+from typing import List, Optional, Dict, Any
+from fastapi import UploadFile
+from sqlalchemy.exc import SQLAlchemyError
+
+from app.db.models import logger
+
+
 router = APIRouter(tags=["Document"])
 
 @router.post(
@@ -26,35 +33,37 @@ router = APIRouter(tags=["Document"])
 async def upload(
     files: List[UploadFile] = File(...),
     folder: Optional[str] = None,
-    metadata_repository: DocumentRepository = Depends(get_repository(DocumentRepository)),
+    document_repo: DocumentRepository = Depends(get_repository(DocumentRepository)),
+    metadata_repository: MetadataRepository = Depends(get_repository(MetadataRepository)),
     user_repository: AuthRepository = Depends(get_repository(AuthRepository)),
     user: TokenData = Depends(get_current_user),
 ) -> List[DocumentMetadataRead]:
-    if not files:
-        raise http_400(msg="No input files provided.")
     responses = []
     for file in files:
-        res = await metadata_repository.upload(
-            metadata_repo=metadata_repository,
-            user_repo=user_repository,
-            file=file,
+        # Call the DocumentRepository.upload, passing both repos plus this one file
+        res = await document_repo.upload(
+            metadata_repository=metadata_repository,
+            user_repository=user_repository,
+            file=file,         # single UploadFile
             folder=folder,
             user=user,
+            tenant_id=user.tenant_id,
+            department_id=user.department_id,
         )
         if res["response"] == "file_added":
-            responses.append(
-                await metadata_repository.upload(document_upload=res["upload"])
-            )
+            # then persist metadata & return the newly created metadata
+            created = await metadata_repository.get_doc(filename=file.filename)
+            responses.append(created)
         elif res["response"] == "file_updated":
-            responses.append(
-                await metadata_repository.patch(
-                    document=res["upload"]["name"],
-                    document_patch=res["upload"],
-                    owner=user,
-                    user_repo=user_repository,
-                    is_owner=res.get("is_owner", False),
-                )
+            patched = await metadata_repository.patch(
+                document=res["upload"]["name"],
+                document_patch=res["upload"],
+                owner=user,
+                user_repo=user_repository,
+                is_owner=res.get("is_owner", False),
             )
+            responses.append(patched)
+
     return responses
 
 @router.get(
@@ -64,7 +73,7 @@ async def upload(
 )
 async def download(
     file_name: str,
-    metadata_repository: DocumentRepository = Depends(get_repository(DocumentRepository)),
+    metadata_repository: MetadataRepository = Depends(get_repository(MetadataRepository)),
     user: TokenData = Depends(get_current_user),
 ) -> FileResponse:
     if not file_name:
@@ -87,8 +96,8 @@ async def download(
 )
 async def add_to_bin(
     file_name: str,
-    metadata_repository: DocumentRepository = Depends(
-        get_repository(DocumentRepository)
+    metadata_repository: MetadataRepository = Depends(
+        get_repository(MetadataRepository)
     ),
     user: TokenData = Depends(get_current_user),
 ) -> None:
@@ -101,12 +110,12 @@ async def add_to_bin(
     name="list_of_bin",
 )
 async def list_bin(
-    metadata_repo: DocumentRepository = Depends(
-        get_repository(DocumentRepository)
+    metadata_repository: MetadataRepository = Depends(
+        get_repository(MetadataRepository)
     ),
     user: TokenData = Depends(get_current_user),
 ):
-    return await metadata_repo.bin_list(owner=user)
+    return await metadata_repository.bin_list(owner=user)
 
 @router.delete(
     "/trash/{file_name}",
@@ -116,8 +125,8 @@ async def list_bin(
 async def perm_delete(
     file_name: Optional[str] = None,
     delete_all: bool = False,
-    metadata_repository: DocumentRepository = Depends(
-        get_repository(DocumentRepository)
+    metadata_repository: MetadataRepository = Depends(
+        get_repository(MetadataRepository)
     ),
     user: TokenData = Depends(get_current_user),
 ) -> None:
@@ -146,12 +155,12 @@ async def perm_delete(
 )
 async def restore_bin(
     file: str,
-    metadata_repo: DocumentRepository = Depends(
-        get_repository(DocumentRepository)
+    metadata_repository: MetadataRepository = Depends(
+        get_repository(MetadataRepository)
     ),
     user: TokenData = Depends(get_current_user),
 ) -> DocumentMetadataRead:
-    return await metadata_repo.restore(file=file, owner=user)
+    return await metadata_repository.restore(file=file, owner=user)
 
 @router.delete(
     "/trash",
@@ -159,12 +168,12 @@ async def restore_bin(
     name="empty_trash",
 )
 async def empty_trash(
-    metadata_repo: DocumentRepository = Depends(
-        get_repository(DocumentRepository)
+    metadata_repository: MetadataRepository = Depends(
+        get_repository(MetadataRepository)
     ),
     user: TokenData = Depends(get_current_user),
 ) -> None:
-    await metadata_repo.empty_bin(owner=user)
+    await metadata_repository.empty_bin(owner=user)
 
 @router.get(
     "/preview/{document}",
@@ -173,7 +182,7 @@ async def empty_trash(
 )
 async def get_document_preview(
     document: Union[str, UUID],
-    metadata_repository: DocumentRepository = Depends(get_repository(DocumentRepository)),
+    metadata_repository: MetadataRepository = Depends(get_repository(MetadataRepository)),
     user: TokenData = Depends(get_current_user),
 ) -> FileResponse:
     if not document:

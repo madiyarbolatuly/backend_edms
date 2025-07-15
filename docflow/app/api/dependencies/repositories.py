@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-import ulid
+from app.core.utils import get_ulid
 
 from fastapi import Depends, UploadFile, HTTPException
 from fastapi.responses import FileResponse
@@ -30,7 +30,9 @@ class TempFileResponse(FileResponse):
 
 # ─── 3) DB session dependency ─────────────────────────────────────────────────
 
-async def get_db() -> AsyncSession:
+from typing import AsyncGenerator
+
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
     async with async_session() as session:
         yield session
         await session.commit()
@@ -45,9 +47,6 @@ def get_repository(repo_cls):
 
 
 # ─── 5) ULID generator ────────────────────────────────────────────────────────
-
-def get_ulid() -> str:
-    return str(ulid.ULID())
 
 
 # ─── 6) (Optional) Save an uploaded file to disk ───────────────────────────────

@@ -1,8 +1,8 @@
-"""add parent_id to document_metadata
+"""add parent_id to documents
 
-Revision ID: 7f8629643798
-Revises: 47b2823f5f59
-Create Date: 2025-05-26 17:26:03.350057
+Revision ID: da7f9125b216
+Revises: 1bdb332f5f6b
+Create Date: 2025-07-14 16:14:22.229826
 
 """
 from typing import Sequence, Union
@@ -12,8 +12,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '7f8629643798'
-down_revision: Union[str, None] = '47b2823f5f59'
+revision: str = 'da7f9125b216'
+down_revision: Union[str, None] = '1bdb332f5f6b'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

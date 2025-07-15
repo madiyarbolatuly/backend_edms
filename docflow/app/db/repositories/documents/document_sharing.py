@@ -230,4 +230,3 @@ class SharedDocumentRepository:
                 filename=filename,
                 auth_repo=auth_repo
             )
-1

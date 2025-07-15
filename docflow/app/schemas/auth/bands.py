@@ -24,7 +24,7 @@ class UserOut(BaseModel):
     email:         EmailStr
     role:          str
     is_active:     bool                = True
-    user_since:    datetime
+    created_at:    datetime
 
     class Config:
         from_attributes = True
@@ -38,3 +38,5 @@ class TokenData(BaseModel):
     id:       Optional[str]  = None
     username: Optional[str]  = None
     role:     Optional[str]  = None
+    tenant_id: int 
+    department_id: int 

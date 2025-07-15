@@ -22,14 +22,13 @@ from app.db.tables.documents.documents import Document
 
 from app.schemas.documents.documents_metadata import FolderCreate, FolderRead
 from app.db.tables.documents.permissions import Permission, AccessLevel
+from app.db.tables.documents.permissions import doc_user_access
 
-
-
-class DocumentRepository:
+class MetadataRepository:
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
-        self.doc_cls = aliased(DocumentMetadata, name="doc_cls")
+        self.doc_cls = aliased(Document, name="doc_cls")
 
     async def _get_instance(self, document: Union[str, UUID], owner: TokenData):
 
@@ -38,16 +37,20 @@ class DocumentRepository:
             stmt = (
                 select(self.doc_cls)
                 .where(self.doc_cls.owner_id == owner.id)
-                .where(self.doc_cls.id == document)
-                .where(Document.deleted_at.isnot(None))
+                .where(self.doc_cls.tenant_id == owner.tenant_id)
+                .where(self.doc_cls.department_id == owner.department_id)
+                .where(self.doc_cls.name == document)
+                .where(self.doc_cls.deleted_at.isnot(None))
             )
         except ValueError:
             stmt = (
                 select(self.doc_cls)
                 .where(self.doc_cls.owner_id == owner.id)
+                .where(self.doc_cls.tenant_id == owner.tenant_id)
+                .where(self.doc_cls.department_id == owner.department_id)
                 .where(self.doc_cls.name == document)
-                # .where(self.doc_cls.status != StatusEnum.deleted)
-                .where(Document.deleted_at.isnot(None))
+                # .where(self.doc_cls.status != St  atusEnum.deleted)
+                .where(self.doc_cls.deleted_at.isnot(None))
             )
 
         result = await self.session.execute(stmt)
@@ -62,20 +65,20 @@ class DocumentRepository:
         return document_patch.model_dump(exclude_unset=True)
 
     async def _execute_update(
-        self, db_document: Document | Dict[str, Any], changes: dict
+        self, db_document: Document | Dict[str, Any], changes: Dict[str, Any]
     ) -> Document:
 
         if isinstance(db_document, dict):
             stmt = (
-                update(DocumentMetadata)
-                .where(DocumentMetadata.id == db_document.get("id"))
+                update(Document)
+                .where(Document.id == db_document.get("id"))
                 .values(changes)
             )
             doc_name = db_document.get("name")
         else:
             stmt = (
-                update(DocumentMetadata)
-                .where(DocumentMetadata.id == db_document.id)
+                update(Document)
+                .where(Document.id == db_document.id)
                 .values(changes)
             )
             doc_name = db_document.name
@@ -130,8 +133,8 @@ class DocumentRepository:
         """
 
         stmt = (
-            select(DocumentMetadata)
-            .where(DocumentMetadata.name == filename)
+            select(Document)
+            .where(Document.name == filename)
             .where(Document.deleted_at.isnot(None))
             #.where(self.doc_cls.status != StatusEnum.deleted)
         )
@@ -145,9 +148,9 @@ class DocumentRepository:
     ) -> DocumentMetadataRead:
 
         if not isinstance(document_upload, dict):
-            db_document = DocumentMetadata(**document_upload.model_dump())
+            db_document = Document(**document_upload.model_dump())
         else:
-            db_document = DocumentMetadata(**document_upload)
+            db_document = Document(**document_upload)
 
         try:
             self.session.add(db_document)
@@ -166,9 +169,11 @@ class DocumentRepository:
 
         stmt = (
             select(self.doc_cls)
-            .join(DocumentMetadata, DocumentMetadata.id == self.doc_cls.id)
-            .where(DocumentMetadata.owner_id == owner.id)
-            .where(DocumentMetadata.status != StatusEnum.deleted)
+            .join(Document, Document.id == self.doc_cls.id)
+            .where(Document.owner_id == owner.id)
+            .where(Document.tenant_id == owner.tenant_id)
+            .where(Document.department_id == owner.department_id)
+            .where(Document.status != StatusEnum.deleted)
             .offset(offset)
             .limit(limit)
         )
@@ -253,9 +258,11 @@ class DocumentRepository:
     async def bin_list(self, owner: TokenData) -> dict:
 
         stmt = (
-            select(DocumentMetadata)
-            .where(DocumentMetadata.owner_id == owner.id)
-            .where(DocumentMetadata.status == StatusEnum.deleted)
+            select(Document)
+            .where(Document.owner_id == owner.id)
+            .where(Document.tenant_id == owner.tenant_id)
+            .where(Document.department_id == owner.department_id)
+            .where(Document.status == StatusEnum.deleted)
         )
         result = await self.session.scalars(stmt)
         docs = [DocumentMetadataRead.from_orm(doc) for doc in result]
@@ -279,10 +286,12 @@ class DocumentRepository:
     async def perm_delete_a_doc(self, document: UUID | None, owner: TokenData) -> None:
 
         stmt = (
-            delete(DocumentMetadata)
-            .where(DocumentMetadata.owner_id == owner.id)
-            .where(DocumentMetadata.id == document)
-            .where(DocumentMetadata.status == StatusEnum.deleted)
+            delete(Document)
+            .where(Document.owner_id == owner.id)
+            .where(Document.tenant_id == owner.tenant_id)
+            .where(Document.department_id == owner.department_id)
+            .where(Document.id == document)
+            .where(Document.status == StatusEnum.deleted)
         )
 
         await self.session.execute(stmt)
@@ -290,9 +299,11 @@ class DocumentRepository:
     async def empty_bin(self, owner: TokenData):
 
         stmt = (
-            delete(DocumentMetadata)
-            .where(DocumentMetadata.owner_id == owner.id)
-            .where(DocumentMetadata.status == StatusEnum.deleted)
+            delete(Document)
+            .where(Document.owner_id == owner.id)
+            .where(Document.tenant_id == owner.tenant_id)
+            .where(Document.department_id == owner.department_id)
+            .where(Document.status == StatusEnum.deleted)
         )
 
         await self.session.execute(stmt)
@@ -314,9 +325,9 @@ class DocumentRepository:
     async def archive_list(self, user: TokenData) -> Dict[str, List[str] | int]:
 
         stmt = (
-            select(DocumentMetadata)
-            .where(DocumentMetadata.owner_id == user.id)
-            .where(DocumentMetadata.status == StatusEnum.archived)
+            select(Document)
+            .where(Document.owner_id == user.id)
+            .where(Document.status == StatusEnum.archived)
         )
 
         result = (await self.session.execute(stmt)).fetchall()
@@ -335,10 +346,10 @@ class DocumentRepository:
         raise http_404(msg="Doc does not exits")
 
     async def create_folder(self, owner_id: str, data: FolderCreate) -> FolderRead:
-        folder = DocumentMetadata(
+        folder = Document(
             owner_id=owner_id,
             name=data.name,
-            type="folder",
+            file_type="folder",
             parent_id=data.parent_id,
         )
         self.session.add(folder)
@@ -349,30 +360,30 @@ class DocumentRepository:
     async def list_children(self, owner_id: str, parent_id: UUID = None) -> List[FolderRead]:
         q = (
             await self.session.execute(
-                select(DocumentMetadata)
-                .where(DocumentMetadata.owner_id == owner_id)
-                .where(DocumentMetadata.parent_id == parent_id)
+                select(Document)
+                .where(Document.owner_id == owner_id)
+                .where(Document.parent_id == parent_id)
             )
         )
         results = q.scalars().all()
         return [FolderRead.from_orm(r) for r in results]
 
     async def archive_document(self, document_id: UUID):
-        stmt = update(DocumentMetadata).where(DocumentMetadata.id == document_id).values(is_archived=True)
+        stmt = update(Document).where(Document.id == document_id).values(is_archived=True)
         await self.session.execute(stmt)
         await self.session.commit()
 
     async def is_document_archived(self, document_id: UUID) -> bool:
-        stmt = select(Document.is_archived).where(DocumentMetadata.id == document_id)
+        stmt = select(Document.is_archived).where(Document.id == document_id)
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
     async def toggle_favourited(self, document_id: UUID):
-        stmt = select(Document.is_favourited).where(DocumentMetadata.id == document_id)
+        stmt = select(Document.is_favourited).where(Document.id == document_id)
         result = await self.session.execute(stmt)
         is_favourited = result.scalar_one_or_none()
 
-        stmt = update(DocumentMetadata).where(DocumentMetadata.id == document_id).values(is_favourited=not is_favourited)
+        stmt = update(Document).where(Document.id == document_id).values(is_favourited=not is_favourited)
         await self.session.execute(stmt)
         await self.session.commit()
 
@@ -397,7 +408,7 @@ class DocumentRepository:
         return DocumentMetadataRead.from_orm(doc)
 
     async def archive_list(self, user: TokenData):
-        stmt = select(DocumentMetadata).where(DocumentMetadata.owner_id == user.id).where(Document.is_archived == True)
+        stmt = select(Document).where(Document.owner_id == user.id).where(Document.is_archived == True)
         result = (await self.session.execute(stmt)).scalars().all()
         return {"documents": [DocumentMetadataRead.from_orm(doc) for doc in result], "count": len(result)}
 
@@ -411,22 +422,22 @@ class DocumentRepository:
 
     async def get_folder_by_name_and_parent(self, name: str, parent_id: UUID, owner_id: str):
         stmt = (
-            select(DocumentMetadata)
-            .where(DocumentMetadata.name == name)
-            .where(DocumentMetadata.parent_id == parent_id)
-            .where(DocumentMetadata.owner_id == owner_id)
-            .where(DocumentMetadata.type == "folder")
+            select(Document)
+            .where(Document.name == name)
+            .where(Document.parent_id == parent_id)
+            .where(Document.owner_id == owner_id)
+            .where(Document.type == "folder")
         )
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
     async def get_folder_by_id(self, folder_id: UUID, owner_id: str):
         stmt = (
-            select(DocumentMetadata)
-            .where(DocumentMetadata.id == folder_id)
-            .where(DocumentMetadata.parent_id == None )
-            .where(DocumentMetadata.owner_id == owner_id)
-            .where(DocumentMetadata.type == "folder")
-            .where(DocumentMetadata.status != StatusEnum.deleted
+            select(Document)
+            .where(Document.id == folder_id)
+            .where(Document.parent_id == None )
+            .where(Document.owner_id == owner_id)
+            .where(Document.type == "folder")
+            .where(Document.status != StatusEnum.deleted
             )  # Ensure the folder is not deleted   
         )

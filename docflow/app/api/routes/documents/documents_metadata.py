@@ -16,10 +16,11 @@ from app.core.config import settings
 from app.core.exceptions import http_404
 from app.db.crud import get_user_by_id
 from app.db.repositories.auth.auth import AuthRepository
-from app.db.repositories.documents.documents_metadata import DocumentRepository
+from app.db.repositories.documents.documents_metadata import MetadataRepository
 from app.schemas.auth.bands import TokenData
 from app.schemas.documents.bands import DocumentMetadataPatch
-
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.api.dependencies.database import get_async_session
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/v2/u/login")
 
@@ -34,8 +35,8 @@ router = APIRouter(tags=["Document MetaData"])
 )
 async def upload_document_metadata(
     document_upload: DocumentMetadataCreate = Body(...),
-    repository: DocumentRepository = Depends(
-        get_repository(DocumentRepository)
+    repository: MetadataRepository = Depends(
+        get_repository(MetadataRepository)
     ),
     user: TokenData = Depends(get_current_user),    
 ) -> DocumentMetadataRead:
@@ -44,7 +45,7 @@ async def upload_document_metadata(
 
     Args:
         document_upload (DocumentMetadataCreate): The document metadata to be uploaded.
-        repository (DocumentRepository): The repository for managing document metadata.
+        repository (MetadataRepository): The repository for managing document metadata.
         user (TokenData): The token data of the authenticated user.
 
     Returns:
@@ -64,8 +65,8 @@ async def upload_document_metadata(
 async def get_documents_metadata(
     limit: int = Query(default=10, lt=100),
     offset: int = Query(default=0),
-    repository: DocumentRepository = Depends(
-        get_repository(DocumentRepository)
+    repository: MetadataRepository = Depends(
+        get_repository(MetadataRepository)
     ),
     user: TokenData = Depends(get_current_user),
 ) -> Dict[str, Union[List[DocumentMetadataRead], Any]]:
@@ -75,7 +76,7 @@ async def get_documents_metadata(
     Args:
         limit (int): The maximum number of documents to retrieve. Defaults to 10.
         offset (int): The number of documents to skip. Defaults to 0.
-        repository (DocumentRepository): The repository for managing document metadata.
+        repository (MetadataRepository): The repository for managing document metadata.
         user (TokenData): The token data of the authenticated user.
 
     Returns:
@@ -93,17 +94,16 @@ async def get_documents_metadata(
 )
 async def get_document_metadata(
     document: Union[str, UUID],
-    repository: DocumentRepository = Depends(
-        get_repository(DocumentRepository)
+    repository: MetadataRepository = Depends(
+        get_repository(MetadataRepository)
     ),
     user: TokenData = Depends(get_current_user),
 ) -> Union[DocumentMetadataRead, HTTPException]:
-    """
-    Retrieves the metadata of a specific document.
+    """ Retrieves the metadata of a specific document.
 
     Args:
         document (Union[str, UUID]): The ID or name of the document.
-        repository (DocumentRepository): The repository for managing document metadata.
+        repository (MetadataRepository): The repository for managing document metadata.
         user (TokenData): The token data of the authenticated user.
 
     Returns:
@@ -122,8 +122,8 @@ async def get_document_metadata(
 async def update_doc_metadata_details(
     document: Union[str, UUID],
     document_patch: DocumentMetadataPatch = Body(...),
-    repository: DocumentRepository = Depends(
-        get_repository(DocumentRepository)
+    repository: MetadataRepository = Depends(
+        get_repository(MetadataRepository)
     ),
     user_repository: AuthRepository = Depends(get_repository(AuthRepository)),
     user: TokenData = Depends(get_current_user),
@@ -134,7 +134,7 @@ async def update_doc_metadata_details(
     Args:
         document (Union[str, UUID]): The ID or name of the document.
         document_patch (DocumentMetadataPatch): The document metadata patch containing the updated details.
-        repository (DocumentRepository): The repository for managing document metadata.
+        repository (MetadataRepository): The repository for managing document metadata.
         user_repository (AuthRepository): The repository for managing user authentication.
         user (TokenData): The token data of the authenticated user.
 
@@ -167,8 +167,8 @@ async def update_doc_metadata_details(
 )
 async def delete_document_metadata(
     document: Union[str, UUID],
-    repository: DocumentRepository = Depends(
-        get_repository(DocumentRepository)
+    repository: MetadataRepository = Depends(
+        get_repository(MetadataRepository)
     ),
     user: TokenData = Depends(get_current_user),
 ) -> None:
@@ -177,8 +177,8 @@ async def delete_document_metadata(
 
     Args:
         document (Union[str, UUID]): The identifier of the document to delete.
-        repository (DocumentRepository): The repository for accessing document metadata.
-            Defaults to the result of the `get_repository` function with `DocumentRepository` as the argument.
+        repository (MetadataRepository): The repository for accessing document metadata.
+            Defaults to the result of the `get_repository` function with `MetadataRepository` as the argument.
         user (TokenData): The token data of the current user. Defaults to the result of the `get_current_user` function.
 
     Returns:
@@ -207,7 +207,7 @@ async def delete_document_metadata(
 )
 async def archive_doc(
     file_name: str,
-    repo: DocumentRepository = Depends(get_repository),
+    repo: MetadataRepository = Depends(get_repository),
     user: TokenData = Depends(get_current_user),
 ) -> DocumentMetadataRead:
     """
@@ -215,7 +215,7 @@ async def archive_doc(
 
     Args:
         file_name (str): The name of the file to be archived.
-        repository (DocumentRepository): The repository for document metadata.
+        repository (MetadataRepository): The repository for document metadata.
         user (TokenData): The user token data.
 
     Returns:
@@ -234,14 +234,14 @@ async def archive_doc(
 )
 
 async def list_archived(
-    repo: DocumentRepository = Depends(get_repository),
+    repo: MetadataRepository = Depends(get_repository),
     user: TokenData = Depends(get_current_user),
 ) -> Dict[str, List[str] | int]:
     """
     Get the list of archived documents.
 
     Args:
-        repository (DocumentRepository): The repository for document metadata.
+        repository (MetadataRepository): The repository for document metadata.
         user (TokenData): The user token data.
 
     Returns:
@@ -260,7 +260,7 @@ async def list_archived(
 )
 async def unarchive_doc(
     file_name: str,
-    repo: DocumentRepository = Depends(get_repository),
+    repo: MetadataRepository = Depends(get_repository),
     user: TokenData = Depends(get_current_user),
 ) -> DocumentMetadataRead:
     """
@@ -268,7 +268,7 @@ async def unarchive_doc(
 
     Args:
         file (str): The name of the file to be un-archived.
-        repository (DocumentRepository): The repository for document metadata.
+        repository (MetadataRepository): The repository for document metadata.
         user (TokenData): The user token data.
 
     Returns:
@@ -280,24 +280,40 @@ async def unarchive_doc(
 
 
 @router.get("/v2/u/me", tags=["User"])
-async def read_users_me(token: str = Depends(oauth2_scheme)):
+async def read_users_me(
+    token: str = Depends(oauth2_scheme),
+    session: AsyncSession = Depends(get_async_session),   # ← берём сессию
+):
     try:
-        payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
-        user_id: str = payload.get("id")
+        payload = jwt.decode(
+            token,
+            settings.jwt_secret_key,                      # ← корректное имя поля
+            algorithms=[settings.algorithm],
+        )
+        user_id: str | None = payload.get("id")
         if user_id is None:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token",
+            )
     except JWTError:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token",
+        )
 
-    user = await get_user_by_id(user_id)
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    user = await get_user_by_id(session, user_id)         # ← передаём session
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
 
     return {
         "id": user.id,
         "username": user.username,
         "email": user.email,
-        "user_since": user.user_since
+        "created_at": user.created_at,
     }
 
 
@@ -309,7 +325,7 @@ async def read_users_me(token: str = Depends(oauth2_scheme)):
 )
 async def create_folder(
     folder: FolderCreate,
-    repository: DocumentRepository = Depends(get_repository(DocumentRepository)),
+    repository: MetadataRepository = Depends(get_repository(MetadataRepository)),
     user: TokenData = Depends(get_current_user)
 ) -> DocumentMetadataRead:
     """
@@ -331,21 +347,21 @@ async def create_folder(
 
 
 @router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_document(document_id: UUID, repository: DocumentRepository = Depends(get_repository)):
+async def delete_document(document_id: UUID, repository: MetadataRepository = Depends(get_repository)):
     if await repository.is_document_archived(document_id):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cannot delete archived document.")
     # ...existing delete logic...
 
 
 @router.patch("/{document_id}")
-async def edit_document(document_id: UUID, repository: DocumentRepository = Depends(get_repository)):
+async def edit_document(document_id: UUID, repository: MetadataRepository = Depends(get_repository)):
     if await repository.is_document_archived(document_id):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cannot edit archived document.")
     # ...existing edit logic...
 
 
 @router.put("/{document_id}/rename")
-async def rename_document(document_id: UUID, repository: DocumentRepository = Depends(get_repository)):
+async def rename_document(document_id: UUID, repository: MetadataRepository = Depends(get_repository)):
     if await repository.is_document_archived(document_id):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cannot rename archived document.")
     # ...existing rename logic...
@@ -353,7 +369,7 @@ async def rename_document(document_id: UUID, repository: DocumentRepository = De
 
 
 @router.put("/{document_id}/star")
-async def toggle_star(document_id: UUID, repository: DocumentRepository = Depends(get_repository)):
+async def toggle_star(document_id: UUID, repository: MetadataRepository = Depends(get_repository)):
     await repository.toggle_favourited(document_id)
     return {"message": "favourited status toggled successfully."}
 
@@ -361,7 +377,7 @@ async def toggle_star(document_id: UUID, repository: DocumentRepository = Depend
 @router.post("/upload-folder", response_model=List[DocumentMetadataRead], status_code=201)
 async def upload_folder(
     files: List[UploadFile] = File(...),
-    repository: DocumentRepository = Depends(get_repository(DocumentRepository)),
+    repository: MetadataRepository = Depends(get_repository(MetadataRepository)),
     user: TokenData = Depends(get_current_user)
 ):
     saved = []

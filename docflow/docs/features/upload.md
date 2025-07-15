@@ -31,12 +31,12 @@ versioning is mentioned [here]()).
 ### Code Explanation
 
 ```python
-1.     async def upload(self, metadata_repo, user_repo, file: File, folder: str, user: TokenData) -> Dict[str, Any]:
+1.     async def upload(self, metadata_repository, user_repo, file: File, folder: str, user: TokenData) -> Dict[str, Any]:
 2.         """
 3.         Uploads a file to the specified folder in the document repository.
 4. 
 5.         Args:
-6.             @param metadata_repo: The repository for accessing metadata.
+6.             @param metadata_repository: The repository for accessing metadata.
 7.             @param user_repo: The repository for accessing user information.
 8.             @param file: The file to be uploaded.
 9.             @param folder: The folder in which the file should be uploaded.
@@ -57,12 +57,12 @@ versioning is mentioned [here]()).
 24.
 25.        contents = file.file.read()
 26.
-27.        doc = (await metadata_repo.get(document=file.filename, owner=user)).__dict__
+27.        doc = (await metadata_repository.get(document=file.filename, owner=user)).__dict__
 28.        # hash of the file uploaded to check if change in file
 29.        new_file_hash: str = await self._calculate_file_hash(file=file)
 30.        if "status_code" in doc.keys():
 31.            # getting document irrespective of user
-32.            if get_doc := (await metadata_repo.get_doc(filename=file.filename)):
+32.            if get_doc := (await metadata_repository.get_doc(filename=file.filename)):
 33.                get_doc = get_doc.__dict__
 34.                # Check if logged-in user has update access
 35.                logged_in_user = (await user_repo.get_user(field="username", detail=user.username)).__dict__

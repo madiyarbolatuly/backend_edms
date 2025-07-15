@@ -47,6 +47,11 @@ class GlobalConfig(BaseSettings):
     jwt_secret_key: str = os.environ.get("JWT_SECRET_KEY")
     jwt_refresh_secret_key: str = os.environ.get("JWT_REFRESH_SECRET_KEY")
 
+    @property
+    def secret_key(self) -> str:
+        """Backward-compat alias for old code paths."""
+        return self.jwt_secret_key
+
     # Email Service
     smtp_server: str = os.environ.get("SMTP_SERVER")
     smtp_port: int = os.environ.get("SMTP_PORT")

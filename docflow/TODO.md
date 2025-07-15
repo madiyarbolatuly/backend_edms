@@ -16,3 +16,32 @@ Queues also
 Deque Doubly linked list
 INsert after insertbefore
 remove
+
+INSERT INTO documents (
+    tenant_id,
+    department_id,
+    owner_id,
+    file_type,
+    document_number,
+    title,
+    name,
+    status,
+    file_path,
+    is_archived,
+    is_favourited,
+    created_at
+)
+VALUES (
+    1,
+    1,
+    '01K063DE332RJC7VXXRW0VHNHX',
+    'application/pdf',
+    'DOC-001',
+    'tmp',
+    'tmp.pdf',
+    'draft',
+    'tmp/tmp.pdf',
+    FALSE,
+    FALSE,
+    now()
+);

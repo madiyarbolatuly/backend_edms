@@ -3,11 +3,14 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, Session
-
+from app.db.base import Base
 from app.core.config import settings
 from app.core.exceptions import http_500
-from sqlalchemy.orm import declarative_base
 logger = logging.getLogger("sqlalchemy")
+from app.db.tables.auth.auth import User                     # noqa: F401
+from app.db.tables.documents.documents import Document  # noqa: F401
+from app.db.tables.documents.documents import Document  # noqa: F401
+from app.db.tables.departments import Department
 
 engine = create_engine(
     url=settings.sync_database_url,
@@ -30,7 +33,6 @@ async_session = sessionmaker(
     expire_on_commit=False,
 )
 
-Base = declarative_base()
 metadata = Base.metadata
 
 

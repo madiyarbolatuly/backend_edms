@@ -9,8 +9,8 @@ from app.api.dependencies.auth_utils import get_current_user
 from app.api.dependencies.repositories import get_repository
 from app.core.exceptions import http_404
 from app.db.repositories.auth.auth import AuthRepository
-from app.db.repositories.documents.documents import DocumentRepository
-from app.db.repositories.documents.documents_metadata import DocumentRepository
+from app.db.repositories.documents.documents import DocumentRepository 
+from app.db.repositories.documents.documents_metadata import MetadataRepository
 from app.db.repositories.documents.document_sharing import SharedDocumentRepository
 from app.db.repositories.documents.notify import NotifyRepo
 from app.schemas.auth.bands import TokenData
@@ -31,8 +31,8 @@ async def share_link_document(
         get_repository(SharedDocumentRepository)
     ),
     auth_repository: AuthRepository = Depends(get_repository(AuthRepository)),
-    metadata_repository: DocumentRepository = Depends(
-        get_repository(DocumentRepository)
+    metadata_repository: MetadataRepository = Depends(
+        get_repository(MetadataRepository)
     ),
     notify_repository: NotifyRepo = Depends(get_repository(NotifyRepo)),
     user: TokenData = Depends(get_current_user),
@@ -122,8 +122,7 @@ async def share_document(
     share_request: SharingRequest,
     notify: bool = True,
     repository: SharedDocumentRepository = Depends(get_repository(SharedDocumentRepository)),
-    document_repo: DocumentRepository = Depends(get_repository(DocumentRepository)),
-    metadata_repo: DocumentRepository = Depends(get_repository(DocumentRepository)),
+    metadata_repository: MetadataRepository = Depends(get_repository(MetadataRepository)),
     notify_repo: NotifyRepo = Depends(get_repository(NotifyRepo)),
     auth_repo: AuthRepository = Depends(get_repository(AuthRepository)),
     user: TokenData = Depends(get_current_user),
@@ -138,7 +137,7 @@ async def share_document(
     repository (SharedDocumentRepository, optional): The repository for document sharing
         operations.
     document_repo (DocumentRepository, optional): The repository for document operations.
-    metadata_repo (DocumentRepository, optional): The repository for document metadata
+    metadata_repository (DocumentRepository, optional): The repository for document metadata
         operations.
     notify_repo (NotifyRepo, optional): The repository for notification operations.
     auth_repo (AuthRepository, optional): The repository for authentication operations.
@@ -155,7 +154,7 @@ async def share_document(
         raise http_404(msg="Enter document id or UUID.")
     try:
         get_document_metadata = dict(
-            await metadata_repo.get(document=document, owner=user)
+            await metadata_repository.get(document=document, owner=user)
         )
 
         filepath = os.path.join(settings.upload_dir, get_document_metadata["name"])

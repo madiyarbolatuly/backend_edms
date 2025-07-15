@@ -1,11 +1,20 @@
+# app/db/tables/documents/permissions.py
 from datetime import datetime, timezone
-from sqlalchemy import Column, Integer, DateTime, Enum as SQLEnum, ForeignKey, String
-from app.db.base import Base
 from enum import Enum as PyEnum
+
+from sqlalchemy import (
+    Column,
+    DateTime,
+    Enum as SQLEnum,
+    ForeignKey,
+    Integer,
+    String,
+)
+from app.db.models import Base
 
 
 class AccessLevel(str, PyEnum):
-    read  = "read"
+    read = "read"
     write = "write"
     admin = "admin"
 
@@ -13,10 +22,20 @@ class AccessLevel(str, PyEnum):
 class Permission(Base):
     __tablename__ = "permissions"
 
-    id           = Column(Integer, primary_key=True)
-    document_id  = Column(Integer, ForeignKey("documents.id"), nullable=False)
-    user_id      = Column(String(26), ForeignKey("users.id"), nullable=False)
+    id = Column(Integer, primary_key=True)
+    document_id = Column(Integer, ForeignKey("documents.id"), nullable=False)
+    user_id = Column(String(26), ForeignKey("users.id"), nullable=False)
     access_level = Column(SQLEnum(AccessLevel), nullable=False)
-    created_at   = Column(DateTime(timezone=True),
-                          default=datetime.now(timezone.utc),
-                          nullable=False)
+    created_at = Column(
+        DateTime(timezone=True),
+        default=datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Alias the mapped table so existing `from …permissions import doc_user_access`
+# statements keep working.
+# --------------------------------------------------------------------------- #
+doc_user_access = Permission.__table__     
+__all__ = ("Permission", "doc_user_access") 

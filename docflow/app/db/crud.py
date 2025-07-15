@@ -1,9 +1,15 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+from fastapi import Depends
 from app.db.tables.auth.auth import User
 from app.core.exceptions import http_404
 
-async def get_user_by_id(session: AsyncSession, user_id: str):
+
+async def get_user_by_id(
+        session: AsyncSession,
+        user_id: str,
+        
+        ):
     """
     Retrieve a user by their ID.
 
@@ -24,4 +30,5 @@ async def get_user_by_id(session: AsyncSession, user_id: str):
     if not user:
         raise http_404(msg=f"User with ID {user_id} not found.")
 
-    return user
+    return (await session.execute(stmt)).scalar_one()
+
