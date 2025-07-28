@@ -19,214 +19,119 @@ from app.db.repositories.auth.auth import AuthRepository
 from app.db.repositories.documents.notify import NotifyRepo
 from app.schemas.auth.bands import TokenData
 from app.schemas.documents.document_sharing import SharingRequest
+from app.db.tables.documents.documents import Document
+
+from sqlalchemy import select, delete
+from uuid import UUID
+
+# ------------- вспомогательные функции ---------------------------------- #
+async def _get_document(session: AsyncSession, filename: str) -> Document:
+    from app.db.tables.documents.documents import Document
+    stmt = select(Document).where(Document.name == filename)
+    doc = (await session.execute(stmt)).scalar_one_or_none()
+    if not doc:
+        raise http_404(msg="Документ не найден.")
+    return doc
+
+# ------------------------------------------------------------------------- #
 
 
 class SharedDocumentRepository:
-    """
-    Repository for managing document‐sharing records and links
-    on the local filesystem.
-    """
-
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def get_user_mail(self, user: TokenData) -> str:
-        """
-        Lookup the user’s email by their ID.
-        """
-        stmt = select(User.email).where(User.id == user.id)
-        result = await self.session.execute(stmt)
-        email = result.scalar_one_or_none()
-        if not email:
-            raise http_404(msg="Пользователь не найден.")
-        return email
-
+    # ───────────── private helpers ────────────── #
     @staticmethod
-    async def _generate_id(source: str) -> str:
-        """
-        Create a 6-char slice of an MD5 hash of the filename (or URL).
-        """
+    def _generate_token(source: str) -> str:
         digest = hashlib.md5(source.encode("utf-8")).hexdigest()
-        offset = randint(0, len(digest) - 6)
-        return digest[offset : offset + 6]
+        return digest[randint(0, len(digest) - 6):][:6]
 
-    async def _get_saved_link(self, filename: str) -> Optional[SharedDocument]:
-        """
-        Check if there’s already a sharing entry for this filename.
-        """
-        stmt = select(SharedDocument).where(SharedDocument.filename == filename)
-        result = await self.session.execute(stmt)
-        return result.scalar_one_or_none()
+    async def _existing_link(
+        self, doc_id: int, shared_with: str
+    ) -> Optional[SharedDocument]:
+        stmt = (
+            select(SharedDocument)
+            .where(SharedDocument.document_id == doc_id)
+            .where(SharedDocument.shared_with == shared_with)
+            .where(SharedDocument.expires_at > datetime.now(timezone.utc))
+        )
+        return (await self.session.execute(stmt)).scalar_one_or_none()
 
-    async def cleanup_expired_links(self) -> None:
-        """
-        Purge any sharing entries whose expiry has passed.
-        """
+    async def _purge_expired(self) -> None:
         now = datetime.now(timezone.utc)
         stmt = delete(SharedDocument).where(SharedDocument.expires_at <= now)
         await self.session.execute(stmt)
+    # ───────────────────────────────────────────── #
+
+    # ---------- PUBLIC API ------------------------------------------------ #
 
     async def get_shareable_link(
-        self, owner_id: str, filename: str, visits: int, share_to: List[str], expires_at: Optional[datetime] = None
+        self,
+        owner: TokenData,               # << вместо owner_id и списка почт
+        filename: str,
+        share_to: List[str],
+        expires_at: Optional[datetime] = None,
     ) -> Dict[str, Any]:
         """
-        Return an existing link (if still valid), or create a new one.
+        Для каждого получателя либо возвращает уже существующую ссылку,
+        либо создаёт новую запись в `shared_documents`.
         """
-        # 1) Remove expired entries first
-        await self.cleanup_expired_links()
+        await self._purge_expired()
+        from app.db.tables.documents.documents import Document
+        stmt = select(Document).where(Document.name == filename)
+        doc = (await self.session.execute(stmt)).scalar_one_or_none()
+        if not doc:
+            raise http_404(msg="Документ не найден.")
+        doc_id = doc.id
 
-        # 2) If already shared and still valid, return it
-        existing = await self._get_saved_link(filename)
-        if existing:
-            data = existing.__dict__
-            return {
-                "note": f"Ссылка действительна до {data['expires_at']}",
-                "response": {
-                    "shareable_link": (
-                        f"{settings.host_url}{settings.api_prefix}/doc/{data['url_id']}"
-                    ),
-                    "visits_left": data["visits"],
-                },
-            }
 
-        # 3) Otherwise, create a new sharing entry
-        url_id = await self._generate_id(filename)
-        expires_at = (
-            expires_at
-            if expires_at
-            else datetime.now(timezone.utc) + timedelta(days=7)
-        )
 
-        share_entry = SharedDocument(
-            url_id=url_id,
-            owner_id=owner_id,
-            filename=filename,
-            url=f"{settings.host_url}/uploads/{filename}",
-            expires_at=expires_at,
-            visits=visits,
-            share_to=share_to,
-        )
+        links: Dict[str, str] = {}
+        for recipient in share_to:
+            entry = await self._existing_link(doc_id, recipient)
+            if entry is None:
+                token = self._generate_token(f"{filename}{recipient}{datetime.utcnow()}")
+                entry = SharedDocument(
+                    document_id=doc_id,
+                    shared_by=owner.id,
+                    shared_with=recipient,
+                    token=token,
+                    filename=doc.name,  
+                    expires_at= expires_at or datetime.now(timezone.utc) + timedelta(days=7),
+                   
+                )
+                self.session.add(entry)
 
-        try:
-            self.session.add(share_entry)
-            await self.session.commit()
-            await self.session.refresh(share_entry)
-        except Exception as e:
-            raise http_500() from e
+            links[recipient] = (
+                f"{settings.host_url}{settings.api_prefix}/doc/{entry.token}"
+            )
 
+        await self.session.commit()
         return {
-            "shareable_link": (
-                f"{settings.host_url}{settings.api_prefix}/doc/{share_entry.url_id}"
-            ),
-            "visits": share_entry.visits,
+            "links": links,                 # recipient ⇒ url
+            "expires_at": expires_at,
         }
 
-    async def get_redirect_url(self, url_id: str) -> str:
-        """
-        Look up the real file URL for a share link, decrement visits,
-        or 404 if expired/invalid.
-        """
-        stmt = select(SharedDocument).where(SharedDocument.url_id == url_id)
-        result = await self.session.execute(stmt)
-        record = result.scalar_one_or_none()
-
-        if not record:
-            raise http_404(
-                msg="Ссылка на документ недействительна или срок ее действия истек."
+    async def get_redirect_url(self, token: str) -> str:
+        entry = (
+            await self.session.execute(
+                select(SharedDocument).where(SharedDocument.token == token)
             )
+        ).scalar_one_or_none()
+        if entry is None or entry.expires_at <= datetime.now(timezone.utc):
+            raise http_404(msg="Ссылка недействительна или истекла.")
+        # здесь можно вернуть actual path к файлу
+        return f"{settings.host_url}/uploads/{token}"
 
-        # decrement or delete
-        return record.url
-
-    async def send_mail(
-        self,
-        user: TokenData,
-        mail_to: Union[List[str], None],
-        link: str
-    ) -> None:
-        """
-        Optionally email the shareable link to a list of recipients.
-        """
-        if not mail_to:
-            return
-
-        sender_email = await self.get_user_mail(user)
-        subject = f"GQ Group: {user.username} поделился с документом"
-        body = (
-            f"Здравствуйте,\n\n"
-            f"{user.username} ({sender_email}) поделился с вами документом.\n"
-            f"Ознакомиться с ним можно по ссылке: {link}\n\n"
-            f"EDMS GQ Group\n"
-        )
-
-        for recipient in mail_to:
-            mail_service(
-                mail_to=recipient,
-                subject=subject,
-                content=body,
-                file_path=None
+    async def confirm_access(self, user: TokenData, token: str) -> bool:
+        entry = (
+            await self.session.execute(
+                select(SharedDocument).where(SharedDocument.token == token)
             )
-
-    async def confirm_access(self, user: TokenData, url_id: str) -> bool:
-        """
-        Check whether the logged-in user is allowed to follow the share link.
-        """
-        stmt = select(SharedDocument).where(SharedDocument.url_id == url_id)
-        result = await self.session.execute(stmt)
-        record = result.scalar_one_or_none()
-        if not record:
-            raise http_404(msg="Ссылка для доступа недействительна или срок ее действия истек.")
-
-        user_email = await self.get_user_mail(user)
-        allowed = (
-            record.owner_id == user.id
-            or user_email in record.share_to
-            or user.username in record.share_to
-        )
-        return allowed
-
-    async def share_document(
-        self,
-        filename: str,
-        share_request: SharingRequest,
-        notify: bool,
-        owner: TokenData,
-        notify_repo: NotifyRepo,
-        auth_repo: AuthRepository,
-    ) -> None:
-        """
-        Email the actual file as an attachment, then optionally
-        record a notification via NotifyRepo.
-        """
-        # 1) Resolve the full path on disk
-        path: Path = await get_file_path(filename)
-
-        # 2) Stream it into a NamedTemporaryFile so mail_service can attach it
-        suffix = path.suffix
-        with tempfile.NamedTemporaryFile(delete=True, suffix=suffix) as tmp:
-            tmp.write(path.read_bytes())
-            tmp.flush()
-
-            user_email = await self.get_user_mail(owner)
-            subject = f"{owner.username} поделился документом с вами"
-            for recipient in share_request.share_to:
-                body = (
-                    f"Здравствуйте {recipient},\n\n"
-                    f"{owner.username} ({user_email}) поделился документом с вами\n\n"
-                    
-                )
-                mail_service(
-                    mail_to=recipient,
-                    subject=subject,
-                    content=body,
-                    file_path=tmp.name
-                )
-
-        # 3) Optionally record a notification entry
-        if notify:
-            await notify_repo.notify(
-                user=owner,
-                receivers=share_request.share_to,
-                filename=filename,
-                auth_repo=auth_repo
-            )
+        ).scalar_one_or_none()
+        if not entry:
+            return False
+        if entry.shared_by == user.id:
+            return True
+        user_mail = await self.get_user_mail(user)
+        return user_mail == entry.shared_with or user.username == entry.shared_with

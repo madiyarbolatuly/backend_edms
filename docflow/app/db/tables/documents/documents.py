@@ -8,13 +8,9 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship, Mapped
 from enum import Enum as PyEnum
 from app.db.base import Base
+from app.db.tables.base_class import DocStatus
 
 
-class DocStatus(str, PyEnum):
-    draft     = "draft"
-    review    = "review"
-    published = "published"
-    archived  = "archived"
 
 
 class Document(Base):
@@ -43,6 +39,7 @@ class Document(Base):
 
     # folders (optional – keep if you need a tree)
     parent_id: Mapped[int | None] = Column(Integer, ForeignKey("documents.id"))
+    
     children        = relationship("Document", backref="parent",
                                    cascade="all, delete",
                                    remote_side="Document.id")

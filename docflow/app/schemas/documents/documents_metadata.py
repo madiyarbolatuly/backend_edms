@@ -1,10 +1,11 @@
 from typing import Optional, List
 from uuid import UUID
-from pydantic import BaseModel, Field
+from app.schemas.base import BaseSchema
+from pydantic import Field
 from datetime import datetime
 
 
-from app.schemas.documents.bands import DocumentMetadataBase
+from app.schemas.documents.bands import DocumentMetadataBase, DocStatus
 
 
 class DocumentMetadataCreate(DocumentMetadataBase):
@@ -19,15 +20,18 @@ class DocumentMetadataCreate(DocumentMetadataBase):
     is_favourited: bool = False
 
 class DocumentMetadataRead(DocumentMetadataBase):
-    id: UUID
+    id: int
     name: str
     file_path: Optional[str] = None
+    size: Optional[str] = None
+    tags: Optional[List[str]] = []
+    status: DocStatus
 
-class FolderCreate(BaseModel):
+class FolderCreate(BaseSchema):
     name: str = Field(..., description="Folder name")
     parent_id: Optional[UUID] = Field(None, description="Parent folder ID")
 
-class FolderRead(BaseModel):
+class FolderRead(BaseSchema):
     id: UUID
     owner_id: str
     name: str
@@ -37,3 +41,5 @@ class FolderRead(BaseModel):
 
     class Config:
         from_attributes = True
+        orm_mode = True
+        arbitrary_types_allowed = True

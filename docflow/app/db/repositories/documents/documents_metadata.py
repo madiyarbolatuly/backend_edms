@@ -11,7 +11,7 @@ from sqlalchemy.orm import aliased
 from app.core.exceptions import http_409, http_404
 from app.db.repositories.auth.auth import AuthRepository
 from app.db.tables.documents.documents import Document
-from app.db.tables.base_class import StatusEnum
+from app.db.tables.base_class import DocStatus
 from app.schemas.auth.bands import TokenData
 from app.schemas.documents.bands import DocumentMetadataPatch
 from app.schemas.documents.documents_metadata import (
@@ -23,6 +23,7 @@ from app.db.tables.documents.documents import Document
 from app.schemas.documents.documents_metadata import FolderCreate, FolderRead
 from app.db.tables.documents.permissions import Permission, AccessLevel
 from app.db.tables.documents.permissions import doc_user_access
+from enum import Enum
 
 class MetadataRepository:
 
@@ -40,7 +41,7 @@ class MetadataRepository:
                 .where(self.doc_cls.tenant_id == owner.tenant_id)
                 .where(self.doc_cls.department_id == owner.department_id)
                 .where(self.doc_cls.name == document)
-                .where(self.doc_cls.deleted_at.isnot(None))
+                .where(self.doc_cls.deleted_at.is_(None))
             )
         except ValueError:
             stmt = (
@@ -50,7 +51,7 @@ class MetadataRepository:
                 .where(self.doc_cls.department_id == owner.department_id)
                 .where(self.doc_cls.name == document)
                 # .where(self.doc_cls.status != St  atusEnum.deleted)
-                .where(self.doc_cls.deleted_at.isnot(None))
+                .where(self.doc_cls.deleted_at.is_(None))
             )
 
         result = await self.session.execute(stmt)
@@ -135,8 +136,8 @@ class MetadataRepository:
         stmt = (
             select(Document)
             .where(Document.name == filename)
-            .where(Document.deleted_at.isnot(None))
-            #.where(self.doc_cls.status != StatusEnum.deleted)
+            .where(Document.deleted_at.is_(None))
+            #.where(self.doc_cls.status != DocStatus.deleted)
         )
         result = await self.session.execute(stmt)
         result.fetchall()
@@ -148,7 +149,7 @@ class MetadataRepository:
     ) -> DocumentMetadataRead:
 
         if not isinstance(document_upload, dict):
-            db_document = Document(**document_upload.model_dump())
+            db_document = Document(**document_upload.model_dump(exclude={"size", "tags", "categories", "file_hash", "access_to", "status"}))
         else:
             db_document = Document(**document_upload)
 
@@ -173,22 +174,25 @@ class MetadataRepository:
             .where(Document.owner_id == owner.id)
             .where(Document.tenant_id == owner.tenant_id)
             .where(Document.department_id == owner.department_id)
-            .where(Document.status != StatusEnum.deleted)
+            .where(Document.status != DocStatus.deleted)
             .offset(offset)
             .limit(limit)
         )
 
         result = await self.session.execute(stmt)
-        result_list = result.fetchall()
+        result_list = result.scalars().all()
 
-        for row in result_list:
-            row.doc_cls.__dict__.pop("_sa_instance_state", None)
+        # Приведение Enum (если нужно)
+        for doc in result_list:
+            if isinstance(doc.status, Enum) and not isinstance(doc.status, DocStatus):
+                doc.status = DocStatus(doc.status.value)
 
-        result = [
-            DocumentMetadataRead(**row.doc_cls.__dict__) for row in result_list
-        ]
-        # Always return a consistent response, even if empty
-        return {f"documents of {owner.username}": result, "no_of_docs": len(result)}
+        result_models = [DocumentMetadataRead.model_validate(doc) for doc in result_list]
+
+        return {
+            f"documents of {owner.username}": result_models,
+            "no_of_docs": len(result_models),
+        }
 
     async def get(
         self, document: Union[str, UUID], owner: TokenData
@@ -196,7 +200,7 @@ class MetadataRepository:
 
         db_document = await self._get_instance(document=document, owner=owner)
         if db_document is None:
-            return http_409(msg=f"No Document with {document}")
+            raise http_409(msg=f"No Document with {document}")
 
         return DocumentMetadataRead(**db_document.__dict__)
 
@@ -233,7 +237,7 @@ class MetadataRepository:
         try:
             db_document = await self._get_instance(document=document, owner=owner)
 
-            # setattr(db_document, "status", StatusEnum.deleted)
+            # setattr(db_document, "status", DocStatus.deleted)
             # setattr(db_document, "tags", None)
             # setattr(db_document, "access_to", None)
             # setattr(db_document, "file_type", None)
@@ -262,7 +266,7 @@ class MetadataRepository:
             .where(Document.owner_id == owner.id)
             .where(Document.tenant_id == owner.tenant_id)
             .where(Document.department_id == owner.department_id)
-            .where(Document.status == StatusEnum.deleted)
+            .where(Document.status == DocStatus.deleted)
         )
         result = await self.session.scalars(stmt)
         docs = [DocumentMetadataRead.from_orm(doc) for doc in result]
@@ -275,7 +279,7 @@ class MetadataRepository:
         if doc_list["no_of_docs"] > 0:
             for doc in doc_list["response"]:
                 if doc.name == file:
-                    change = {"status": StatusEnum.private}
+                    change = {"status": DocStatus.private}
                     await self._execute_update(
                         db_document=doc, changes=change
                     )
@@ -291,7 +295,7 @@ class MetadataRepository:
             .where(Document.tenant_id == owner.tenant_id)
             .where(Document.department_id == owner.department_id)
             .where(Document.id == document)
-            .where(Document.status == StatusEnum.deleted)
+            .where(Document.status == DocStatus.deleted)
         )
 
         await self.session.execute(stmt)
@@ -303,45 +307,35 @@ class MetadataRepository:
             .where(Document.owner_id == owner.id)
             .where(Document.tenant_id == owner.tenant_id)
             .where(Document.department_id == owner.department_id)
-            .where(Document.status == StatusEnum.deleted)
+            .where(Document.status == DocStatus.deleted)
         )
 
         await self.session.execute(stmt)
 
-    async def archive(self, file: str, user: TokenData):
+    async def archive(self, document: str, user: TokenData) -> DocumentMetadataRead:
 
-        doc = await self._get_instance(document=file, owner=user)
+        doc = await self._get_instance(document=document, owner=user)
 
-        if doc and doc.status != StatusEnum.archived:
-            change = {"status": StatusEnum.archived}
+        if doc and doc.status != DocStatus.archived:
+            change = {"status": DocStatus.archived}
             await self._execute_update(db_document=doc, changes=change)
             return DocumentMetadataRead(**doc.__dict__)
 
-        if doc and doc.status == StatusEnum.archived:
+        if doc and doc.status == DocStatus.archived:
             raise http_409(msg="Документ уже в архиве")
 
         raise http_404(msg="Документ не существует")
 
-    async def archive_list(self, user: TokenData) -> Dict[str, List[str] | int]:
-
-        stmt = (
-            select(Document)
-            .where(Document.owner_id == user.id)
-            .where(Document.status == StatusEnum.archived)
-        )
-
-        result = (await self.session.execute(stmt)).fetchall()
-        return {"response": result, "no_of_docs": len(result)}
 
     async def un_archive(self, file: str, user: TokenData) -> DocumentMetadataRead:
 
         doc = await self._get_instance(document=file, owner=user)
 
-        if doc and doc.status == StatusEnum.archived:
+        if doc and doc.status == DocStatus.archived:
             change = {"status": "private"}
             await self._execute_update(db_document=doc, changes=change)
             return DocumentMetadataRead(**doc.__dict__)
-        if doc and doc.status != StatusEnum.archived:
+        if doc and doc.status != DocStatus.archived:
             raise http_409(msg="Doc is not archived")
         raise http_404(msg="Doc does not exits")
 
@@ -387,38 +381,13 @@ class MetadataRepository:
         await self.session.execute(stmt)
         await self.session.commit()
 
-    async def archive(self, file: str, user: TokenData):
-        doc = await self._get_instance(document=file, owner=user)
-        if not doc:
-            raise http_404(msg="Document not found")
-        if doc.is_archived:
-            raise http_409(msg="Document is already archived")
-        doc.is_archived = True
-        await self.session.commit()
-        return DocumentMetadataRead.from_orm(doc)
-
-    async def un_archive(self, file: str, user: TokenData):
-        doc = await self._get_instance(document=file, owner=user)
-        if not doc:
-            raise http_404(msg="Document not found")
-        if not doc.is_archived:
-            raise http_409(msg="Document is not archived")
-        doc.is_archived = False
-        await self.session.commit()
-        return DocumentMetadataRead.from_orm(doc)
 
     async def archive_list(self, user: TokenData):
         stmt = select(Document).where(Document.owner_id == user.id).where(Document.is_archived == True)
         result = (await self.session.execute(stmt)).scalars().all()
         return {"documents": [DocumentMetadataRead.from_orm(doc) for doc in result], "count": len(result)}
 
-    async def toggle_favourited(self, document_id: UUID, user: TokenData):
-        doc = await self._get_instance(document=document_id, owner=user)
-        if not doc:
-            raise http_404(msg="Document not found")
-        doc.is_favourited = not doc.is_favourited
-        await self.session.commit()
-        return {"message": "favourited status toggled successfully."}
+
 
     async def get_folder_by_name_and_parent(self, name: str, parent_id: UUID, owner_id: str):
         stmt = (
@@ -438,6 +407,6 @@ class MetadataRepository:
             .where(Document.parent_id == None )
             .where(Document.owner_id == owner_id)
             .where(Document.type == "folder")
-            .where(Document.status != StatusEnum.deleted
+            .where(Document.status != DocStatus.deleted
             )  # Ensure the folder is not deleted   
         )

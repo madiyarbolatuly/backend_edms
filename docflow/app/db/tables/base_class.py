@@ -1,7 +1,6 @@
-import enum
+from enum import Enum as PyEnum
 
-
-class StatusEnum(enum.Enum):
+class DocStatus(str, PyEnum):
     """
     Enum for status of document
     """
@@ -11,9 +10,12 @@ class StatusEnum(enum.Enum):
     shared = "shared"
     deleted = "deleted"
     archived = "archived"
+    draft     = "draft"
+    review    = "review"
+    published = "published"
 
 
-class NotifyEnum(enum.Enum):
+class NotifyEnum(str, PyEnum):
     """
     Enum for status of notification
     """

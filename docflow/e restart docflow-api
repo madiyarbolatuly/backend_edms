@@ -10,7 +10,7 @@
  file_type   | character varying        |           |          | 
  tags        | character varying[]      |           |          | 
  categories  | character varying[]      |           |          | 
- status      | statusenum               |           |          | 
+ status      | DocStatus               |           |          | 
  file_hash   | character varying        |           |          | 
  access_to   | character varying[]      |           |          | 
  type        | character varying        |           |          | 

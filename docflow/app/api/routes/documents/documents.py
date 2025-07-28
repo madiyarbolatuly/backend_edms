@@ -64,7 +64,7 @@ async def upload(
             )
             responses.append(patched)
 
-    return responses
+    return [DocumentMetadataRead.from_orm(r) for r in responses if r is not None]
 
 @router.get(
     "/file/{file_name}/download",

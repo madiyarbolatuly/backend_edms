@@ -77,7 +77,7 @@ class NotifyRepo:
             HTTP_404: If no notification with the given ID is found.
         """
 
-        stmt = select(Notify).where(Notify.receiver_id == user.id and Notify.id == n_id)
+        stmt = select(Notify).where(Notify.user_id == user.id and Notify.id == n_id)
 
         try:
             result = (await self.session.execute(stmt)).scalar_one_or_none()
@@ -96,7 +96,7 @@ class NotifyRepo:
             List[Notification]: A list of notification objects.
         """
 
-        stmt = select(Notify).where(Notify.receiver_id == user.id)
+        stmt = select(Notify).where(Notify.user_id == user.id)
 
         notifications = (await self.session.execute(stmt)).fetchall()
 
@@ -121,7 +121,7 @@ class NotifyRepo:
 
         stmt = (
             update(Notify)
-            .where(Notify.receiver_id == user.id and Notify.status != NotifyEnum.read)
+            .where(Notify.user_id == user.id and Notify.status != NotifyEnum.read)
             .values({Notify.status: NotifyEnum.read})
         )
 
@@ -151,7 +151,7 @@ class NotifyRepo:
         stmt = (
             update(Notify)
             .where(
-                Notify.receiver_id == user.id
+                Notify.user_id == user.id
                 and Notify.id == n_id
                 and Notify.status != updated_status.status
             )
@@ -178,7 +178,7 @@ class NotifyRepo:
             Exception: If an error occurs while clearing the notifications.
         """
 
-        stmt = delete(Notify).where(Notify.receiver_id == user.id)
+        stmt = delete(Notify).where(Notify.user_id == user.id)
 
         try:
             await self.session.execute(stmt)

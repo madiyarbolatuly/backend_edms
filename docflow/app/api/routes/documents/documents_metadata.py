@@ -4,8 +4,6 @@ from uuid import UUID
 from fastapi import APIRouter, status, Body, Depends, Query, HTTPException
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
-from pydantic import BaseModel
-from typing import Optional
 from pathlib import Path
 from fastapi import UploadFile, File
 from app.schemas.documents.documents_metadata import DocumentMetadataCreate, DocumentMetadataRead, FolderCreate
@@ -173,7 +171,7 @@ async def delete_document_metadata(
     user: TokenData = Depends(get_current_user),
 ) -> None:
     """
-    Deletes the metadata of a document and moves it to the bin.
+    Deletes the metadata of a document and moves it toa the bin.
 
     Args:
         document (Union[str, UUID]): The identifier of the document to delete.
@@ -207,7 +205,7 @@ async def delete_document_metadata(
 )
 async def archive_doc(
     file_name: str,
-    repo: MetadataRepository = Depends(get_repository),
+    repo: MetadataRepository = Depends(get_repository(MetadataRepository)),
     user: TokenData = Depends(get_current_user),
 ) -> DocumentMetadataRead:
     """
@@ -234,7 +232,7 @@ async def archive_doc(
 )
 
 async def list_archived(
-    repo: MetadataRepository = Depends(get_repository),
+    repo: MetadataRepository = Depends(get_repository(MetadataRepository)),
     user: TokenData = Depends(get_current_user),
 ) -> Dict[str, List[str] | int]:
     """
@@ -260,7 +258,7 @@ async def list_archived(
 )
 async def unarchive_doc(
     file_name: str,
-    repo: MetadataRepository = Depends(get_repository),
+    repo: MetadataRepository = Depends(get_repository(MetadataRepository)),
     user: TokenData = Depends(get_current_user),
 ) -> DocumentMetadataRead:
     """
@@ -287,7 +285,7 @@ async def read_users_me(
     try:
         payload = jwt.decode(
             token,
-            settings.jwt_secret_key,                      # ← корректное имя поля
+            settings.jwt_secret_key,                   
             algorithms=[settings.algorithm],
         )
         user_id: str | None = payload.get("id")
@@ -302,7 +300,7 @@ async def read_users_me(
             detail="Invalid token",
         )
 
-    user = await get_user_by_id(session, user_id)         # ← передаём session
+    user = await get_user_by_id(session, user_id)         
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

@@ -2,12 +2,12 @@ from datetime import datetime
 from typing import Optional, List
 from uuid import UUID
 
-from pydantic import BaseModel
-from app.db.tables.base_class import StatusEnum, NotifyEnum
+from app.schemas.base import BaseSchema
+from app.db.tables.base_class import DocStatus, NotifyEnum
 
 
 # Document Metadata
-class DocumentMetadataBase(BaseModel):
+class DocumentMetadataBase(BaseSchema):
     id: UUID
     tenant_id: int                
     department_id: int             
@@ -21,14 +21,14 @@ class DocumentMetadataBase(BaseModel):
     is_archived: bool = False     
     is_favourited: bool = False    #(renamed from starred)
     tags: Optional[List[str]]
-    status: StatusEnum
+    status: DocStatus
     parent_id: Optional[UUID] = None
 
     class Config:
         from_attributes = True
 
 
-class DocumentMetadataPatch(BaseModel):
+class DocumentMetadataPatch(BaseSchema):
     name: str = None
     tags: Optional[List[str]] = None
     categories: Optional[List[str]] = None
@@ -36,7 +36,7 @@ class DocumentMetadataPatch(BaseModel):
 
 
 # Document Sharing
-class DocumentSharingBase(BaseModel):
+class DocumentSharingBase(BaseSchema):
     url_id: str
     owner_id: str
     name: str
@@ -46,7 +46,7 @@ class DocumentSharingBase(BaseModel):
     share_to: Optional[List[str]] = None
 
 
-class DocUserAccess(BaseModel):
+class DocUserAccess(BaseSchema):
     id: str
     doc_id: UUID
     user_id: str
@@ -55,13 +55,13 @@ class DocUserAccess(BaseModel):
         from_attribute = True
 
 
-class DocUserAccessCreate(BaseModel):
+class DocUserAccessCreate(BaseSchema):
     doc_id: str
     user_id: str
 
 
 # Notifications
-class Notification(BaseModel):
+class Notification(BaseSchema):
     id: UUID
     receiver_id: str
     message: str
@@ -69,6 +69,6 @@ class Notification(BaseModel):
     notified_at: datetime
 
 
-class NotifyPatchStatus(BaseModel):
+class NotifyPatchStatus(BaseSchema):
     status: NotifyEnum = NotifyEnum.unread
     mark_all: bool = False

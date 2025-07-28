@@ -70,7 +70,7 @@ class DocumentOrgRepository:
         for doc in docs:
             doc = doc.__dict__
             result.extend(
-                doc for stat in status if str(doc["status"]) == f"StatusEnum.{stat}"
+                doc for stat in status if str(doc["status"]) == f"DocStatus.{stat}"
             )
 
         return result or None

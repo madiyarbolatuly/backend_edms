@@ -1,12 +1,12 @@
 from datetime import datetime
 from typing import Annotated, Optional
 from ulid import ULID
-from pydantic import BaseModel, EmailStr, Field
-
+from app.schemas.base import BaseSchema 
+from pydantic import EmailStr, Field
 PydanticULID = Annotated[str, ULID]
 
 # ----------------------------- INPUT SCHEMAS ----------------------------- #
-class UserAuth(BaseModel):
+class UserAuth(BaseSchema):
     """Credentials for sign-up / sign-in."""
     tenant_id:     int                # NEW  – ties user to tenant
     department_id: int                # NEW
@@ -16,7 +16,7 @@ class UserAuth(BaseModel):
     role:          str       = Field('viewer', description="admin/editor/viewer")
 
 # ----------------------------- OUTPUT SCHEMAS ---------------------------- #
-class UserOut(BaseModel):
+class UserOut(BaseSchema):
     id:            PydanticULID
     tenant_id:     int
     department_id: int
@@ -30,11 +30,11 @@ class UserOut(BaseModel):
         from_attributes = True
 
 # ------------------------------ TOKEN SCHEMAS --------------------------- #
-class Token(BaseModel):
+class Token(BaseSchema):
     access_token: str
     token_type:   str                 = "bearer"
 
-class TokenData(BaseModel):
+class TokenData(BaseSchema):
     id:       Optional[str]  = None
     username: Optional[str]  = None
     role:     Optional[str]  = None
