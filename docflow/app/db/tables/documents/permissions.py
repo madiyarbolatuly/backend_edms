@@ -24,7 +24,7 @@ class Permission(Base):
 
     id = Column(Integer, primary_key=True)
     document_id = Column(Integer, ForeignKey("documents.id"), nullable=False)
-    user_id = Column(String(26), ForeignKey("users.id"), nullable=False)
+    user_id = Column(String(255), ForeignKey("users.id"), nullable=False)
     access_level = Column(SQLEnum(AccessLevel), nullable=False)
     created_at = Column(
         DateTime(timezone=True),

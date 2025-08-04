@@ -329,81 +329,63 @@ async def create_folder(
     """
     Create a new folder entry. Does not upload any file content.
     """
-    # Assign owner and type
     metadata = DocumentMetadataCreate(**folder.dict())
     metadata.owner_id = user.id
     metadata.type = "folder"
-    
     # Optional: Validate parent exists and is a folder
     if metadata.parent_id:
-        parent = await repository.get(metadata.parent_id, owner=user)
-        if not parent or parent.type != "folder":
-            raise HTTPException(status_code=404, detail="Parent folder not found")
-    
-    # Use the same repository.upload() logic (it just INSERTs metadata)
+        parent = await repository.get(document=metadata.parent_id, owner=user)
+        if not parent or getattr(parent, "type", None) != "folder":
+            raise HTTPException(status_code=400, detail="Parent must be a folder.")
     return await repository.upload(document_upload=metadata)
+
+@router.patch("/{document_id}", response_model=DocumentMetadataRead, status_code=status.HTTP_200_OK, name="patch_document_metadata")
+async def patch_document_metadata(
+    document_id: Union[str, UUID],
+    document_patch: DocumentMetadataPatch = Body(...),
+    repository: MetadataRepository = Depends(get_repository(MetadataRepository)),
+    user_repository: AuthRepository = Depends(get_repository(AuthRepository)),
+    user: TokenData = Depends(get_current_user),
+) -> DocumentMetadataRead:
+    try:
+        await repository.get(document=document_id, owner=user)
+    except Exception as e:
+        raise http_404(msg=f"No Document with: {document_id}") from e
+    return await repository.patch(
+        document=document_id,
+        document_patch=document_patch,
+        owner=user,
+        user_repo=user_repository,
+        is_owner=True,
+    )
 
 
 @router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_document(document_id: UUID, repository: MetadataRepository = Depends(get_repository)):
+async def delete_document(document_id: UUID, repository: MetadataRepository = Depends(get_repository(MetadataRepository))):
     if await repository.is_document_archived(document_id):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cannot delete archived document.")
     # ...existing delete logic...
 
 
 @router.patch("/{document_id}")
-async def edit_document(document_id: UUID, repository: MetadataRepository = Depends(get_repository)):
+async def edit_document(document_id: UUID, repository: MetadataRepository = Depends(get_repository(MetadataRepository))):
     if await repository.is_document_archived(document_id):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cannot edit archived document.")
     # ...existing edit logic...
 
 
 @router.put("/{document_id}/rename")
-async def rename_document(document_id: UUID, repository: MetadataRepository = Depends(get_repository)):
+async def rename_document(document_id: UUID, repository: MetadataRepository = Depends(get_repository(MetadataRepository))):
     if await repository.is_document_archived(document_id):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cannot rename archived document.")
     # ...existing rename logic...
     
 
-
-@router.put("/{document_id}/star")
-async def toggle_star(document_id: UUID, repository: MetadataRepository = Depends(get_repository)):
-    await repository.toggle_favourited(document_id)
+@router.put("/{document_name}/star")
+async def toggle_star(document_name: str, repository: MetadataRepository = Depends(get_repository(MetadataRepository))):
+    doc = await repository.get_by_name(document_name)
+    if not doc:
+        raise HTTPException(404, detail="Document not found")
+    await repository.toggle_favourited(doc.id)
     return {"message": "favourited status toggled successfully."}
 
-
-@router.post("/upload-folder", response_model=List[DocumentMetadataRead], status_code=201)
-async def upload_folder(
-    files: List[UploadFile] = File(...),
-    repository: MetadataRepository = Depends(get_repository(MetadataRepository)),
-    user: TokenData = Depends(get_current_user)
-):
-    saved = []
-    for file in files:
-        path = Path(file.filename)
-        parent_id = None
-        # Create folder entries for each part of the path (except the file itself)
-        for folder_name in path.parts[:-1]:
-            existing = await repository._by_name_and_parent(folder_name, parent_id, user.id)
-            if existing is None:
-                folder_data = FolderCreate(name=folder_name, parent_id=parent_id)
-                new_folder = await repository.create_folder(owner_id=user.id, data=folder_data)
-                parent_id = new_folder.id
-            else:
-                parent_id = existing.id
-        # Now upload the file, passing parent_id as its folder
-        meta_in = DocumentMetadataCreate(
-            owner_id=user.id,
-            name=path.name,
-            file_path=str(path.parent) if str(path.parent) != '.' else None,
-            parent_id=parent_id,
-            type="file"
-        )
-        saved_meta = await repository.upload(
-            document_upload=meta_in, 
-            file=file,
-            tenant_id=user.tenant_id,
-            department_id=user.department_id
-        )
-        saved.append(saved_meta)
-    return saved

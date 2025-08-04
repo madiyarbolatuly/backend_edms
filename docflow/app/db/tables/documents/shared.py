@@ -8,8 +8,8 @@ class SharedDocument(Base):
 
     id           = Column(Integer, primary_key=True)
     document_id  = Column(Integer, ForeignKey("documents.id"), nullable=False)
-    shared_by    = Column(String(26), ForeignKey("users.id"), nullable=False)
-    shared_with  = Column(String(26), ForeignKey("users.id"), nullable=False)
+    shared_by    = Column(String(255), ForeignKey("users.id"), nullable=False)
+    shared_with  = Column(String(255), ForeignKey("users.id"), nullable=False)
     token        = Column(String, unique=True, nullable=False)
     filename     = Column(String, nullable=False)  # ← Добавь это
     created_at   = Column(DateTime(timezone=True),

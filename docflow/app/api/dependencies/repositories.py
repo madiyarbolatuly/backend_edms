@@ -62,10 +62,10 @@ async def save_upload_file(
     return the stored filename.
     """
     filename = f"{get_ulid()}_{upload_file.filename}"
-    dest = UPLOAD_DIR / str(tenant_id) / str(department_id)
+    dest_dir: Path = UPLOAD_DIR / str(tenant_id) / str(department_id)
     if sub_folder:
         dest_dir = dest_dir / sub_folder
-    dest.mkdir(parents=True, exist_ok=True)
+    dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / filename
 
     try:

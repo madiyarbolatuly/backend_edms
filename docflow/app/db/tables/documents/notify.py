@@ -18,7 +18,7 @@ class Notify(Base):
                           primary_key=True,
                           index=True,
                           nullable=False)
-    user_id      = Column(String(26), ForeignKey("users.id"), nullable=False)
+    user_id      = Column(String(255), ForeignKey("users.id"), nullable=False)
     message      = Column(Text, nullable=False)
     type = Column(PGEnum(NotifyEnum, name="notifyenum"), nullable=False)
     status       = Column(Enum(NotifyEnum), default=NotifyEnum.unread)

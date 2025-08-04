@@ -41,10 +41,7 @@ app.mount(
 )  # :contentReference[oaicite:6]{index=6}
 
 app.include_router(router, prefix=settings.api_prefix)
-app.include_router(documents.router, prefix="/documents", tags=["Documents"])
-app.include_router(folders.router, prefix="/folders", tags=["Folders"])
-app.include_router(sharing.router, prefix="/sharing", tags=["Sharing"])
-app.include_router(notifications.router, prefix="/notifications", tags=["Notifications"])
+
 
 
 frontend_build = pathlib.Path(__file__).parent / "frontend" / "dist"

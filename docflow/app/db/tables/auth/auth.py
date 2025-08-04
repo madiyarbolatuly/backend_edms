@@ -18,7 +18,7 @@ class UserRole(str, PyEnum):
 class User(Base):
     __tablename__ = "users"
 
-    id             = Column(String(26), primary_key=True, default=get_ulid, unique=True)
+    id             = Column(String(255), primary_key=True, default=get_ulid, unique=True)
     tenant_id      = Column(Integer, ForeignKey("tenants.id"), nullable=False)
     department_id  = Column(Integer, ForeignKey("departments.id"), nullable=False)
 

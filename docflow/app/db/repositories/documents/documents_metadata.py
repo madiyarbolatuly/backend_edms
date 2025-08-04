@@ -18,14 +18,18 @@ from app.schemas.documents.documents_metadata import (
     DocumentMetadataCreate,
     DocumentMetadataRead,
 )
-from app.db.tables.documents.documents import Document
-
+from app.db.base import BaseRepository
+from pathlib import Path
+import hashlib
+from typing import List, Optional
+from fastapi import UploadFile
 from app.schemas.documents.documents_metadata import FolderCreate, FolderRead
 from app.db.tables.documents.permissions import Permission, AccessLevel
 from app.db.tables.documents.permissions import doc_user_access
 from enum import Enum
+from app.core.config import settings
 
-class MetadataRepository:
+class MetadataRepository(BaseRepository[Document]):
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
@@ -88,6 +92,61 @@ class MetadataRepository:
             await self.session.execute(stmt)
         except Exception as e:
             raise http_409(msg=f"Ошибка при обновлении документа: {doc_name}") from e
+        
+    async def _find_existing(self, filename: str, user: TokenData) -> Optional[Document]:
+        stmt = (
+            select(Document)
+            .where(Document.name == filename)
+            .where(Document.tenant_id == user.tenant_id)
+            .where(Document.department_id == user.department_id)
+            .where(Document.owner_id == user.id)
+            .where(Document.deleted_at.is_(None))
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+    async def _create_or_update_document(
+    self,
+    *,
+    file: UploadFile,
+    file_path: str,
+    file_hash: str,
+    file_size: int,
+    user: TokenData,
+    existing: Optional[Document],
+    parent_id: Optional[int] = None,
+    ) -> Document:
+        if existing:
+            stmt = (
+                update(Document)
+                .where(Document.id == existing.id)
+                .values(
+                    file_path=file_path,
+                    file_hash=file_hash,
+                    created_at=datetime.now(timezone.utc),
+                    is_archived=False,
+                    deleted_at=None,
+                )
+                .returning(Document)
+            )
+            result = await self.session.execute(stmt)
+            return result.scalar_one()
+
+        new_doc = Document(
+            name=file.filename,
+            title=file.filename,
+            tenant_id=user.tenant_id,
+            department_id=user.department_id,
+            owner_id=user.id,
+            file_type="file",
+            file_path=file_path,
+            file_hash=file_hash,
+            created_at=datetime.now(timezone.utc),
+            parent_id=parent_id,
+        )
+        self.session.add(new_doc)
+        await self.session.flush()
+        return new_doc
+
 
     async def _update_access_and_permission(self, db_document, changes, user_repo):
 
@@ -107,6 +166,33 @@ class MetadataRepository:
                 raise http_404(
                     msg=f"Пользователь с адресом '{user_email}' не существует, убедитесь, что у пользователя есть аккаунт в DocFlow."
                 ) from e
+
+   
+
+    async def _stream_and_hash(self, file: UploadFile, user: TokenData, folder: Optional[str]):
+        upload_root = Path(settings.upload_dir)
+        upload_dir = upload_root / str(user.tenant_id) / str(user.department_id)
+        if folder:
+            upload_dir = upload_dir / folder
+
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        file_path = upload_dir / file.filename
+
+        sha256 = hashlib.sha256()
+        total_size = 0
+
+        with file_path.open("wb") as f:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                f.write(chunk)
+                sha256.update(chunk)
+                total_size += len(chunk)
+
+        await file.seek(0)  # reset file stream if reused
+
+        return sha256.hexdigest(), total_size, str(file_path.relative_to(upload_root))
 
     async def _update_doc_user_access(self, db_document, user_id):
 
@@ -170,11 +256,8 @@ class MetadataRepository:
 
         stmt = (
             select(self.doc_cls)
-            .join(Document, Document.id == self.doc_cls.id)
-            .where(Document.owner_id == owner.id)
-            .where(Document.tenant_id == owner.tenant_id)
-            .where(Document.department_id == owner.department_id)
-            .where(Document.status != DocStatus.deleted)
+            .where(self.doc_cls.tenant_id == owner.tenant_id)
+            .where(self.doc_cls.status != DocStatus.deleted)
             .offset(offset)
             .limit(limit)
         )
@@ -224,7 +307,7 @@ class MetadataRepository:
         else:
             # This condition will be activated when, the new version of file is added by a privileged member
             # here privileged member is one who have access to update the document.
-            db_document = await self.get_doc(filename=document)
+            db_document = await self.get_doc(filename=str(document))
             changes = await self._extract_changes(document_patch)
 
             if changes:
@@ -351,7 +434,7 @@ class MetadataRepository:
         await self.session.refresh(folder)
         return FolderRead.from_orm(folder)
 
-    async def list_children(self, owner_id: str, parent_id: UUID = None) -> List[FolderRead]:
+    async def list_children(self, owner_id: str, parent_id: Optional[UUID] = None) -> List[FolderRead]:
         q = (
             await self.session.execute(
                 select(Document)
@@ -410,3 +493,83 @@ class MetadataRepository:
             .where(Document.status != DocStatus.deleted
             )  # Ensure the folder is not deleted   
         )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()  # <-- Добавь это
+
+    async def get_existing_folders(self, folder_paths: List[str], tenant_id: UUID) -> List[Document]:
+        stmt = (
+            select(Document)
+            .where(Document.file_type == "folder")
+            .where(Document.tenant_id == tenant_id)
+            .where(Document.file_path.in_(folder_paths))
+            .where(Document.deleted_at.is_(None))
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+    
+
+        
+    async def bulk_create_folders(
+        self, folder_paths: List[str], *, tenant_id: UUID, user_id: UUID, department_id: UUID
+    ) -> Dict[str, int]:
+        existing = await self.get_existing_folders(folder_paths, tenant_id)
+        
+        # Sort paths to create parent folders first
+        sorted_paths = sorted(folder_paths)
+        path_to_folder: dict[str, int] = {f.file_path: f.id for f in existing}
+        
+        for path in sorted_paths:
+            if path in path_to_folder:
+                continue
+            
+            # Find parent folder
+            parent_path = "/".join(path.split("/")[:-1]) if "/" in path else None
+            parent_id = path_to_folder[parent_path] if parent_path and parent_path in path_to_folder else None
+            
+            folder = Document(
+                name=path.split("/")[-1],
+                file_path=path,
+                tenant_id=tenant_id,
+                department_id=department_id,
+                owner_id=user_id,
+                file_type="folder",
+                parent_id=parent_id,
+                created_at=datetime.now(timezone.utc),
+            )
+            self.session.add(folder)
+            await self.session.flush()
+            path_to_folder[path] = folder.id
+        
+        return path_to_folder
+
+    async def upload_with_streaming(
+        self, *,
+        file: UploadFile,
+        folder: Optional[str],
+        user: TokenData,
+        parent_map: dict[str, int]
+    ):
+        try:
+            file_hash, file_size, file_path = await self._stream_and_hash(file, user, folder)
+            existing = await self._find_existing(file.filename, user)
+            if existing and existing.file_hash == file_hash:
+                return {"response": "no_change", "document": existing}
+            parent_id = None
+            if folder:                      # '' → корень
+                parent_id = parent_map.get(folder.rstrip("/"))
+
+            document = await self._create_or_update_document(
+                file=file,
+                file_path=file_path,
+                file_hash=file_hash,
+                file_size=file_size,
+                user=user,
+                existing=existing,
+                parent_id=parent_id,        # ← передаём
+            )
+            return {"response": "success", "document": document}
+        except Exception:
+            if 'file_path' in locals():
+                Path(file_path).unlink(missing_ok=True)
+            raise

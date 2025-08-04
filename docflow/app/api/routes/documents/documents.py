@@ -1,70 +1,28 @@
-from typing import Dict, List, Optional, Union
+import os
+from typing import List, Optional, Union
 from uuid import UUID
 from pathlib import Path
 
-from fastapi import APIRouter, status, File, UploadFile, Depends
+from fastapi import APIRouter, status, File, UploadFile, Depends, HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy.engine import Row
-from typing import Any, Dict
 from app.api.dependencies.auth_utils import get_current_user
 from app.api.dependencies.repositories import get_repository, get_file_path
 from app.core.exceptions import http_400, http_404
 from app.db.repositories.auth.auth import AuthRepository
 from app.db.repositories.documents.documents import DocumentRepository
-from app.db.repositories.documents.documents_metadata import MetadataRepository 
+from app.db.repositories.documents.documents_metadata import MetadataRepository
 from app.schemas.auth.bands import TokenData
 from app.schemas.documents.documents_metadata import DocumentMetadataRead
 from app.schemas.documents.document_sharing import SharingRequest
-from typing import List, Optional, Dict, Any
 from fastapi import UploadFile
 from sqlalchemy.exc import SQLAlchemyError
+from app.db.tables.documents.documents import Document
 
 from app.db.models import logger
 
 
 router = APIRouter(tags=["Document"])
-
-@router.post(
-    "/upload",
-    response_model=List[DocumentMetadataRead],
-    status_code=status.HTTP_201_CREATED,
-    name="upload_document",
-)
-async def upload(
-    files: List[UploadFile] = File(...),
-    folder: Optional[str] = None,
-    document_repo: DocumentRepository = Depends(get_repository(DocumentRepository)),
-    metadata_repository: MetadataRepository = Depends(get_repository(MetadataRepository)),
-    user_repository: AuthRepository = Depends(get_repository(AuthRepository)),
-    user: TokenData = Depends(get_current_user),
-) -> List[DocumentMetadataRead]:
-    responses = []
-    for file in files:
-        # Call the DocumentRepository.upload, passing both repos plus this one file
-        res = await document_repo.upload(
-            metadata_repository=metadata_repository,
-            user_repository=user_repository,
-            file=file,         # single UploadFile
-            folder=folder,
-            user=user,
-            tenant_id=user.tenant_id,
-            department_id=user.department_id,
-        )
-        if res["response"] == "file_added":
-            # then persist metadata & return the newly created metadata
-            created = await metadata_repository.get_doc(filename=file.filename)
-            responses.append(created)
-        elif res["response"] == "file_updated":
-            patched = await metadata_repository.patch(
-                document=res["upload"]["name"],
-                document_patch=res["upload"],
-                owner=user,
-                user_repo=user_repository,
-                is_owner=res.get("is_owner", False),
-            )
-            responses.append(patched)
-
-    return [DocumentMetadataRead.from_orm(r) for r in responses if r is not None]
 
 @router.get(
     "/file/{file_name}/download",
@@ -204,3 +162,74 @@ async def get_document_preview(
     else:
         raise http_400(msg="File type is not supported for preview")
     return FileResponse(path, media_type=media_type, filename=meta["name"])
+
+@router.post("/upload-folder-bulk")
+async def upload_folder_bulk(
+    files: List[UploadFile] = File(...),
+    user: TokenData = Depends(get_current_user),
+    repo: MetadataRepository = Depends(get_repository(MetadataRepository))
+):
+    """
+    Безопасная массовая загрузка вложенных файлов и папок с транзакцией
+    """
+
+    # Собираем все уникальные вложенные пути
+    folder_paths = set()
+    for file in files:
+        path_parts = Path(file.filename).parts[:-1]
+        for i in range(len(path_parts)):
+            folder_paths.add("/".join(path_parts[:i+1]))
+
+    async with repo.session.begin():  # одна транзакция на всё
+        # 1. Создаём все папки одним блоком
+        folder_map = await repo.bulk_create_folders(
+            sorted(folder_paths), 
+            tenant_id=user.tenant_id, 
+            user_id=user.id,
+            department_id=user.department_id
+        )
+
+        results = []
+
+        # 2. Обрабатываем файлы стримингом
+        for file in files:
+            try:
+                result = await repo.upload_with_streaming(
+                    file=file,
+                    folder=os.path.dirname(file.filename),
+                    user=user
+                )
+                results.append(result)
+            except Exception as e:
+                # Очищаем файл, если упал
+                if hasattr(e, "file_path") and e.file_path:
+                    Path(e.file_path).unlink(missing_ok=True)
+                raise HTTPException(status_code=500, detail=f"Ошибка при загрузке {file.filename}: {e}")
+
+        return {"uploaded": len(results), "results": results}
+
+@router.post(
+    "/upload",
+    status_code=status.HTTP_201_CREATED,
+    name="upload_documents"
+)
+async def upload_documents(
+    files: List[UploadFile] = File(...),
+    folder: Optional[str] = None,
+    preserve_structure: bool = False,
+    user: TokenData = Depends(get_current_user),
+    repo: MetadataRepository = Depends(get_repository(MetadataRepository))
+):
+    """
+    Upload files with optional folder structure preservation
+    """
+    if preserve_structure:
+        return await upload_folder_bulk(files, user, repo)
+    else:
+        # Handle single folder upload (existing logic)
+        results = []
+        for file in files:
+            result = await repo.upload_single_file(file, folder, user)
+            results.append(result)
+        return {"uploaded": len(results), "results": results}
+

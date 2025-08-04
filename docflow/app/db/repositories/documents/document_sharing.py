@@ -24,7 +24,6 @@ from app.db.tables.documents.documents import Document
 from sqlalchemy import select, delete
 from uuid import UUID
 
-# ------------- вспомогательные функции ---------------------------------- #
 async def _get_document(session: AsyncSession, filename: str) -> Document:
     from app.db.tables.documents.documents import Document
     stmt = select(Document).where(Document.name == filename)
@@ -33,14 +32,10 @@ async def _get_document(session: AsyncSession, filename: str) -> Document:
         raise http_404(msg="Документ не найден.")
     return doc
 
-# ------------------------------------------------------------------------- #
-
-
 class SharedDocumentRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    # ───────────── private helpers ────────────── #
     @staticmethod
     def _generate_token(source: str) -> str:
         digest = hashlib.md5(source.encode("utf-8")).hexdigest()
@@ -61,13 +56,10 @@ class SharedDocumentRepository:
         now = datetime.now(timezone.utc)
         stmt = delete(SharedDocument).where(SharedDocument.expires_at <= now)
         await self.session.execute(stmt)
-    # ───────────────────────────────────────────── #
-
-    # ---------- PUBLIC API ------------------------------------------------ #
 
     async def get_shareable_link(
         self,
-        owner: TokenData,               # << вместо owner_id и списка почт
+        owner: TokenData,             
         filename: str,
         share_to: List[str],
         expires_at: Optional[datetime] = None,
@@ -108,7 +100,7 @@ class SharedDocumentRepository:
 
         await self.session.commit()
         return {
-            "links": links,                 # recipient ⇒ url
+            "links": links,                
             "expires_at": expires_at,
         }
 
@@ -120,7 +112,6 @@ class SharedDocumentRepository:
         ).scalar_one_or_none()
         if entry is None or entry.expires_at <= datetime.now(timezone.utc):
             raise http_404(msg="Ссылка недействительна или истекла.")
-        # здесь можно вернуть actual path к файлу
         return f"{settings.host_url}/uploads/{token}"
 
     async def confirm_access(self, user: TokenData, token: str) -> bool:

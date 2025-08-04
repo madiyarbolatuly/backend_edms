@@ -2115,24 +2115,46 @@
 										}
 									],
 									"cookie": [],
-									"body": "{\n  \"in_f\": [\n    {\n      \"owner_id\": \"<string>\",\n      \"name\": \"<string>\",\n      \"s3_url\": \"<string>\",\n      \"created_at\": \"<dateTime>\",\n      \"size\": \"<integer>\",\n      \"file_type\": \"<string>\",\n      \"tags\": [\n        \"<string>\",\n        \"<string>\"\n      ],\n      \"categories\": [\n        \"<string>\",\n        \"<string>\"\n      ],\n      \"status\": \"<string>\",\n      \"file_hash\": \"<string>\",\n      \"access_to\": [\n        \"<string>\",\n        \"<string>\"\n      ],\n      \"id\": \"<uuid>\"\n    },\n    {\n      \"owner_id\": \"<string>\",\n      \"name\": \"<string>\",\n      \"s3_url\": \"<string>\",\n      \"created_at\": \"<dateTime>\",\n      \"size\": \"<integer>\",\n      \"file_type\": \"<string>\",\n      \"tags\": [\n        \"<string>\",\n        \"<string>\"\n      ],\n      \"categories\": [\n        \"<string>\",\n        \"<string>\"\n      ],\n      \"status\": \"<string>\",\n      \"file_hash\": \"<string>\",\n      \"access_to\": [\n        \"<string>\",\n        \"<string>\"\n      ],\n      \"id\": \"<uuid>\"\n    }\n  ],\n  \"ex40\": [\n    {\n      \"owner_id\": \"<string>\",\n      \"name\": \"<string>\",\n      \"s3_url\": \"<string>\",\n      \"created_at\": \"<dateTime>\",\n      \"size\": \"<integer>\",\n      \"file_type\": \"<string>\",\n      \"tags\": [\n        \"<string>\",\n        \"<string>\"\n      ],\n      \"categories\": [\n        \"<string>\",\n        \"<string>\"\n      ],\n      \"status\": \"<string>\",\n      \"file_hash\": \"<string>\",\n      \"access_to\": [\n        \"<string>\",\n        \"<string>\"\n      ],\n      \"id\": \"<uuid>\"\n    },\n    {\n      \"owner_id\": \"<string>\",\n      \"name\": \"<string>\",\n      \"s3_url\": \"<string>\",\n      \"created_at\": \"<dateTime>\",\n      \"size\": \"<integer>\",\n      \"file_type\": \"<string>\",\n      \"tags\": [\n        \"<string>\",\n        \"<string>\"\n      ],\n      \"categories\": [\n        \"<string>\",\n        \"<string>\"\n      ],\n      \"status\": \"<string>\",\n      \"file_hash\": \"<string>\",\n      \"access_to\": [\n        \"<string>\",\n        \"<string>\"\n      ],\n      \"id\": \"<uuid>\"\n    }\n  ]\n}"
+									"body": "{}"
+								}
+							]
+						}
+					]
+				},
+				{
+					"name": "📁 Upload Folder Bulk",
+					"request": {
+						"auth": {
+							"type": "oauth2",
+							"oauth2": [
+								{
+									"key": "accessTokenUrl",
+									"value": "api/u/login",
+									"type": "string"
 								},
 								{
-									"name": "Validation Error",
-									"originalRequest": {
-										"method": "GET",
-										"header": [
-											{
-												"description": "Added as a part of security scheme: oauth2",
-												"key": "Authorization",
-												"value": "{{token}}"
-											},
-											{
-												"key": "Accept",
-												"value": "application/json"
-											}
-										],
-										"url": {
+									"key": "grant_type",
+									"value": "password_credentials",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "multipart/form-data"
+							},
+							{
+								"key": "Accept",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key":
 											"raw": "{{baseUrl}}/v2/metadata?limit=10&offset=0",
 											"host": [
 												"{{baseUrl}}"
@@ -2144,17 +2166,17 @@
 											"query": [
 												{
 													"key": "limit",
-													"value": "10"
+													"value": "10",
 												},
 												{
 													"key": "offset",
-													"value": "0"
+													"value": "0",
 												}
-											]
+											],
 										}
 									},
-									"status": "Unprocessable Entity (WebDAV) (RFC 4918)",
-									"code": 422,
+									"status": "OK",
+									"code": 200,
 									"_postman_previewlanguage": "json",
 									"header": [
 										{
@@ -2163,10 +2185,95 @@
 										}
 									],
 									"cookie": [],
-									"body": "{\n  \"detail\": [\n    {\n      \"loc\": [\n        \"<string>\",\n        \"<string>\"\n      ],\n      \"msg\": \"<string>\",\n      \"type\": \"<string>\"\n    },\n    {\n      \"loc\": [\n        \"<string>\",\n        \"<string>\"\n      ],\n      \"msg\": \"<string>\",\n      \"type\": \"<string>\"\n    }\n  ]\n}"
+									"body": "{}"
 								}
 							]
 						},
+					]
+				},
+				{
+					"name": "📁 Upload Folder Structure",
+					"request": {
+						"auth": {
+							"type": "oauth2",
+							"oauth2": [
+								{
+									"key": "accessTokenUrl",
+									"value": "api/u/login",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "multipart/form-data"
+							}
+						],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "files",
+									"type": "file",
+									"src": []
+								},
+								{
+									"key": "preserve_structure",
+									"value": "true",
+									"type": "text"
+								}
+							]
+						},
+						"name": "Validation Error",
+								"originalRequest": {
+									"method": "GET",
+									"header": [
+										{
+											"description": "Added as a part of security scheme: oauth2",
+											"key": "Authorization",
+											"value": "{{token}}"
+										},
+										{
+											"key": "Accept",
+											"value": "application/json"
+										}
+									],
+									"url": {
+										"raw": "{{baseUrl}}/v2/metadata?limit=10&offset=0",
+										"host": [
+											"{{baseUrl}}"
+										],
+										"path": [
+											"v2",
+											"metadata"
+										],
+										"query": [
+											{
+												"key": "limit",
+												"value": "10"
+											},
+											{
+												"key": "offset",
+												"value": "0"
+											}
+										]
+									}
+								},
+								"status": "Unprocessable Entity (WebDAV) (RFC 4918)",
+								"code": 422,
+								"_postman_previewlanguage": "json",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"cookie": [],
+								"body": "{\n  \"detail\": [\n    {\n      \"loc\": [\n        \"<string>\",\n        \"<string>\"\n      ],\n      \"msg\": \"<string>\",\n      \"type\": \"<string>\"\n    },\n    {\n      \"loc\": [\n        \"<string>\",\n        \"<string>\"\n      ],\n      \"msg\": \"<string>\",\n      \"type\": \"<string>\"\n    }\n  ]\n}"
+							}
+						]
 						{
 							"name": "📤🏷️ Upload Documents Metadata",
 							"request": {

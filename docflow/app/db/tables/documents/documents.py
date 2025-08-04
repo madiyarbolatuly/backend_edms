@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from uuid import uuid4
+from ulid import ULID
 from sqlalchemy import (
     Column, Integer, String, Boolean, DateTime, ForeignKey,
     Enum as SQLEnum, UniqueConstraint
@@ -20,18 +20,17 @@ class Document(Base):
     tenant_id       = Column(Integer, ForeignKey("tenants.id"), nullable=False)
     department_id   = Column(Integer, ForeignKey("departments.id"), nullable=False)
 
-    owner_id        = Column(String(26), ForeignKey("users.id"), nullable=False)
+    owner_id        = Column(String(255), ForeignKey("users.id"), nullable=False)
     owner           = relationship("User", back_populates="documents")
-    file_type        = Column(String(32), nullable=False, server_default="file")
-    document_number = Column(String, nullable=False, unique=True)
+    file_type        = Column(String(255), nullable=False, server_default="file")
+    document_number = Column(String, nullable=False, unique=True, default=lambda: str(ULID()))
     title           = Column(String, nullable=False)
     name           = Column(String, nullable=False, unique=True)  # file name
     status          = Column(SQLEnum(DocStatus), nullable=False, default=DocStatus.draft)
     file_path       = Column(String, nullable=False)     # local FS path
-
     is_archived     = Column(Boolean, default=False, nullable=False)
     is_favourited   = Column(Boolean, default=False, nullable=False)
-
+    file_hash       = Column(String, nullable=True)
     created_at      = Column(DateTime(timezone=True),
                              default=datetime.now(timezone.utc),
                              nullable=False)
