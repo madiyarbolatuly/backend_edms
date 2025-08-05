@@ -197,7 +197,8 @@ async def upload_folder_bulk(
                 result = await repo.upload_with_streaming(
                     file=file,
                     folder=os.path.dirname(file.filename),
-                    user=user
+                    user=user,
+                    parent_map=folder_map
                 )
                 results.append(result)
             except Exception as e:

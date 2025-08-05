@@ -549,6 +549,7 @@ class MetadataRepository(BaseRepository[Document]):
         folder: Optional[str],
         user: TokenData,
         parent_map: dict[str, int]
+        
     ):
         try:
             file_hash, file_size, file_path = await self._stream_and_hash(file, user, folder)

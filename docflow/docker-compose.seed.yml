@@ -1,0 +1,17 @@
+services:
+  seed-data:
+    build: .
+    depends_on:
+      - postgres
+      - api
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-password}
+      - DATABASE_HOSTNAME=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=${POSTGRES_DB:-docflow}
+    command: python app/scripts/seed_data.py
+    volumes:
+      - ./app:/usr/src/app/app
+    profiles:
+      - seed 
