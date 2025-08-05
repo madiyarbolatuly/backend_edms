@@ -10,6 +10,8 @@ from app.api.router import router
 from app.core.config import settings
 from app.db.models import check_tables
 from app.api.routes import auth, documents, folders, sharing, notifications, documents
+from app.api.dependencies.auth_utils import get_current_user
+from app.schemas.auth.bands import TokenData
 
 
 @asynccontextmanager
@@ -23,7 +25,22 @@ app = FastAPI(
     description=settings.description,
     docs_url=settings.docs_url,
     lifespan=lifespan,
+    swagger_ui_parameters={"persistAuthorization": True},  # ← запоминаем JWT
 )
+
+# --- DEV-режим без JWT ----------------------------------
+def _dev_stub_user() -> TokenData:
+    return TokenData(
+        id="01DEVUSERXXXXXXXXXXXXX",
+        username="dev-admin",
+        role="admin",
+        tenant_id=1,
+        department_id=1,
+    )
+
+if settings.debug:                # DEBUG=True в .env
+    app.dependency_overrides[get_current_user] = _dev_stub_user
+# --------------------------------------------------------
 
 app.add_middleware(
     CORSMiddleware, 

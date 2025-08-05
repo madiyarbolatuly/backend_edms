@@ -19,6 +19,7 @@ from app.schemas.auth.bands import TokenData
 from app.schemas.documents.bands import DocumentMetadataPatch
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.dependencies.database import get_async_session
+from sqlalchemy import select
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/v2/u/login")
 
@@ -274,7 +275,7 @@ async def unarchive_doc(
 
     """
 
-    return await repo.un_archive(document=file_name, user=user)
+    return await repo.un_archive(file=file_name, user=user)
 
 
 @router.get("/v2/u/me", tags=["User"])
@@ -382,10 +383,16 @@ async def rename_document(document_id: UUID, repository: MetadataRepository = De
     
 
 @router.put("/{document_name}/star")
-async def toggle_star(document_name: str, repository: MetadataRepository = Depends(get_repository(MetadataRepository))):
-    doc = await repository.get_by_name(document_name)
+async def toggle_star(
+    document_name: str, 
+    repository: MetadataRepository = Depends(get_repository(MetadataRepository)),
+    user: TokenData = Depends(get_current_user)
+):
+    # Use the existing _get_instance method to find the document by name
+    doc = await repository._get_instance(document=document_name, owner=user)
     if not doc:
         raise HTTPException(404, detail="Document not found")
+    
     await repository.toggle_favourited(doc.id)
     return {"message": "favourited status toggled successfully."}
 

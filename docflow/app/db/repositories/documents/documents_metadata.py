@@ -28,6 +28,7 @@ from app.db.tables.documents.permissions import Permission, AccessLevel
 from app.db.tables.documents.permissions import doc_user_access
 from enum import Enum
 from app.core.config import settings
+from app.db.models import logger
 
 class MetadataRepository(BaseRepository[Document]):
 
@@ -36,30 +37,44 @@ class MetadataRepository(BaseRepository[Document]):
         self.doc_cls = aliased(Document, name="doc_cls")
 
     async def _get_instance(self, document: Union[str, UUID], owner: TokenData):
-
         try:
-            UUID(str(document))
+            # First try to convert to integer ID (for database IDs like 3)
+            document_id = int(str(document))
             stmt = (
                 select(self.doc_cls)
                 .where(self.doc_cls.owner_id == owner.id)
                 .where(self.doc_cls.tenant_id == owner.tenant_id)
                 .where(self.doc_cls.department_id == owner.department_id)
-                .where(self.doc_cls.name == document)
+                .where(self.doc_cls.id == document_id)  # Search by integer ID
                 .where(self.doc_cls.deleted_at.is_(None))
             )
         except ValueError:
-            stmt = (
-                select(self.doc_cls)
-                .where(self.doc_cls.owner_id == owner.id)
-                .where(self.doc_cls.tenant_id == owner.tenant_id)
-                .where(self.doc_cls.department_id == owner.department_id)
-                .where(self.doc_cls.name == document)
-                # .where(self.doc_cls.status != St  atusEnum.deleted)
-                .where(self.doc_cls.deleted_at.is_(None))
-            )
+            try:
+                # If not an integer, try to convert to UUID
+                document_id = UUID(str(document))
+                stmt = (
+                    select(self.doc_cls)
+                    .where(self.doc_cls.owner_id == owner.id)
+                    .where(self.doc_cls.tenant_id == owner.tenant_id)
+                    .where(self.doc_cls.department_id == owner.department_id)
+                    .where(self.doc_cls.id == document_id)  # Search by UUID
+                    .where(self.doc_cls.deleted_at.is_(None))
+                )
+            except ValueError:
+                # If not a valid UUID either, search by name (with URL decoding)
+                from urllib.parse import unquote
+                decoded_name = unquote(document)  # Decode URL-encoded filename
+                
+                stmt = (
+                    select(self.doc_cls)
+                    .where(self.doc_cls.owner_id == owner.id)
+                    .where(self.doc_cls.tenant_id == owner.tenant_id)
+                    .where(self.doc_cls.department_id == owner.department_id)
+                    .where(self.doc_cls.name == decoded_name)  # Search by decoded name
+                    .where(self.doc_cls.deleted_at.is_(None))
+                )
 
         result = await self.session.execute(stmt)
-
         return result.scalar_one_or_none()
 
     @staticmethod
@@ -204,7 +219,7 @@ class MetadataRepository(BaseRepository[Document]):
 
     async def _delete_access(self, document) -> None:
         await self.session.execute(
-            doc_user_access.delete().where(doc_user_access.c.doc_id == document.id)
+            doc_user_access.delete().where(doc_user_access.c.document_id == document.id)
         )
 
     async def get_doc(self, filename: str) -> Dict[str, Any]:
@@ -316,31 +331,26 @@ class MetadataRepository(BaseRepository[Document]):
         return DocumentMetadataRead(**db_document.__dict__)
 
     async def delete(self, document: Union[str, UUID], owner: TokenData) -> None:
-
         try:
             db_document = await self._get_instance(document=document, owner=owner)
-
-            # setattr(db_document, "status", DocStatus.deleted)
-            # setattr(db_document, "tags", None)
-            # setattr(db_document, "access_to", None)
-            # setattr(db_document, "file_type", None)
-            # setattr(db_document, "categories", None)
-            # # considering created_at as delete_at to delete it after 30 days
-            # setattr(
-            #     db_document,
-            #     "created_at",
-            #     datetime.now(timezone.utc) + timedelta(days=30),
-            # )
-            db_document.deleted_at = datetime.now(timezone.utc) 
-
-            # delete entry from doc_user_access table
+            
+            if db_document is None:
+                raise http_404(msg=f"No document found with identifier: {document}")
+            
+            # Set both deleted_at timestamp and status to deleted for consistency
+            db_document.deleted_at = datetime.now(timezone.utc)
+            db_document.status = DocStatus.deleted
             await self._delete_access(document=db_document)
-
             self.session.add(db_document)
-
             await self.session.commit()
+            
+        except HTTPException:
+            # Re-raise HTTP exceptions as-is
+            raise
         except Exception as e:
-            raise http_404(msg=f"No file with {document}") from e
+            # Log the actual error for debugging
+            logger.error(f"Error deleting document {document}: {str(e)}")
+            raise http_404(msg=f"Failed to delete document: {document}") from e
 
     async def bin_list(self, owner: TokenData) -> dict:
 
@@ -362,11 +372,25 @@ class MetadataRepository(BaseRepository[Document]):
         if doc_list["no_of_docs"] > 0:
             for doc in doc_list["response"]:
                 if doc.name == file:
-                    change = {"status": DocStatus.private}
-                    await self._execute_update(
-                        db_document=doc, changes=change
+                    # Find the deleted document directly from database
+                    stmt = (
+                        select(Document)
+                        .where(Document.id == doc.id)
+                        .where(Document.owner_id == owner.id)
+                        .where(Document.tenant_id == owner.tenant_id)
+                        .where(Document.department_id == owner.department_id)
+                        .where(Document.status == DocStatus.deleted)
                     )
-                    return DocumentMetadataRead(**doc.__dict__)
+                    result = await self.session.execute(stmt)
+                    db_document = result.scalar_one_or_none()
+                    
+                    if db_document:
+                        # Clear deleted_at and set status back to private
+                        db_document.deleted_at = None
+                        db_document.status = DocStatus.private
+                        self.session.add(db_document)
+                        await self.session.commit()
+                        return DocumentMetadataRead(**db_document.__dict__)
             raise http_409(msg="Doc is not deleted")
         raise http_404(msg="Doc does not exists")
 
@@ -382,6 +406,7 @@ class MetadataRepository(BaseRepository[Document]):
         )
 
         await self.session.execute(stmt)
+        await self.session.commit()
 
     async def empty_bin(self, owner: TokenData):
 
@@ -394,6 +419,7 @@ class MetadataRepository(BaseRepository[Document]):
         )
 
         await self.session.execute(stmt)
+        await self.session.commit()
 
     async def archive(self, document: str, user: TokenData) -> DocumentMetadataRead:
 
@@ -466,7 +492,16 @@ class MetadataRepository(BaseRepository[Document]):
 
 
     async def archive_list(self, user: TokenData):
-        stmt = select(Document).where(Document.owner_id == user.id).where(Document.is_archived == True)
+        stmt = (
+            select(Document)
+            .where(Document.owner_id == user.id)
+            .where(
+                (Document.is_archived == True) | 
+                (Document.status == DocStatus.archived)
+            )
+            .where(Document.deleted_at.is_(None))
+        )
+        
         result = (await self.session.execute(stmt)).scalars().all()
         return {"documents": [DocumentMetadataRead.from_orm(doc) for doc in result], "count": len(result)}
 

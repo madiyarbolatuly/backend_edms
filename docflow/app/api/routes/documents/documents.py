@@ -47,24 +47,9 @@ async def download(
         raise http_404(msg=str(e))
     return FileResponse(path, filename=meta["name"])
 
-@router.delete(
-    "/{file_name}",
-    status_code=status.HTTP_204_NO_CONTENT,
-    name="add_to_bin"
-)
-async def add_to_bin(
-    file_name: str,
-    metadata_repository: MetadataRepository = Depends(
-        get_repository(MetadataRepository)
-    ),
-    user: TokenData = Depends(get_current_user),
-) -> None:
-    await metadata_repository.delete(document=file_name, owner=user)
-
 @router.get(
     "/trash",
     status_code=status.HTTP_200_OK,
-    response_model=None,
     name="list_of_bin",
 )
 async def list_bin(
@@ -76,34 +61,36 @@ async def list_bin(
     return await metadata_repository.bin_list(owner=user)
 
 @router.delete(
-    "/trash/{file_name}",
+    "/trash",
     status_code=status.HTTP_204_NO_CONTENT,
-    name="permanently_delete_doc",
+    name="empty_trash",
 )
-async def perm_delete(
-    file_name: Optional[str] = None,
-    delete_all: bool = False,
+async def empty_trash(
     metadata_repository: MetadataRepository = Depends(
         get_repository(MetadataRepository)
     ),
     user: TokenData = Depends(get_current_user),
 ) -> None:
-    try:
-        trash = await metadata_repository.bin_list(owner=user)
-        if delete_all:
-            await metadata_repository.empty_bin(owner=user)
-        elif trash.get("response"):
-            for entry in trash["response"]:
-                if entry.name == file_name:
-                    await metadata_repository.perm_delete_a_doc(
-                        document=entry.id,
-                        owner=user
-                    )
-                    break
-        else:
-            raise http_404(msg=f"No file with name '{file_name}' in trash.")
-    except Exception:
-        raise http_404(msg=f"No file with name '{file_name}'")
+    await metadata_repository.empty_bin(owner=user)
+
+@router.delete(
+    "/trash/{file_name:path}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    name="permanently_delete_doc",
+)
+async def perm_delete(
+    file_name: str,
+    metadata_repository: MetadataRepository = Depends(
+        get_repository(MetadataRepository)
+    ),
+    user: TokenData = Depends(get_current_user),
+) -> None:
+    trash = await metadata_repository.bin_list(owner=user)
+    for entry in trash.get("response", []):
+        if entry.name == file_name:
+            await metadata_repository.perm_delete_a_doc(document=entry.id, owner=user)
+            return
+    raise http_404(msg=f"No file with name '{file_name}' in trash.")
 
 @router.post(
     "/restore/{file}",
@@ -121,17 +108,18 @@ async def restore_bin(
     return await metadata_repository.restore(file=file, owner=user)
 
 @router.delete(
-    "/trash",
+    "/{file_name:path}",
     status_code=status.HTTP_204_NO_CONTENT,
-    name="empty_trash",
+    name="add_to_bin"
 )
-async def empty_trash(
+async def add_to_bin(
+    file_name: str,
     metadata_repository: MetadataRepository = Depends(
         get_repository(MetadataRepository)
     ),
     user: TokenData = Depends(get_current_user),
 ) -> None:
-    await metadata_repository.empty_bin(owner=user)
+    await metadata_repository.delete(document=file_name, owner=user)
 
 @router.get(
     "/preview/{document}",
