@@ -46,9 +46,6 @@ def get_repository(repo_cls):
     return _get_repo
 
 
-# ─── 5) ULID generator ────────────────────────────────────────────────────────
-
-
 # ─── 6) (Optional) Save an uploaded file to disk ───────────────────────────────
 
 async def save_upload_file(
@@ -61,7 +58,7 @@ async def save_upload_file(
     Write the incoming UploadFile into UPLOAD_DIR and
     return the stored filename.
     """
-    filename = f"{get_ulid()}_{upload_file.filename}"
+    filename = f"{upload_file.filename}_{get_ulid()}"
     dest_dir: Path = UPLOAD_DIR / str(tenant_id) / str(department_id)
     if sub_folder:
         dest_dir = dest_dir / sub_folder

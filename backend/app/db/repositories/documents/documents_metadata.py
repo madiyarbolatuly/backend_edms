@@ -19,7 +19,7 @@ from app.schemas.documents.documents_metadata import (
     DocumentMetadataRead,
 )
 from app.db.base import BaseRepository
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import hashlib
 from typing import List, Optional
 from fastapi import UploadFile
@@ -108,17 +108,20 @@ class MetadataRepository(BaseRepository[Document]):
         except Exception as e:
             raise http_409(msg=f"Ошибка при обновлении документа: {doc_name}") from e
         
-    async def _find_existing(self, filename: str, user: TokenData) -> Optional[Document]:
+    async def _find_existing(self, filename: str, user: TokenData, parent_id: Optional[int]) -> Optional[Document]:
         stmt = (
             select(Document)
-            .where(Document.name == filename)
             .where(Document.tenant_id == user.tenant_id)
             .where(Document.department_id == user.department_id)
-            .where(Document.owner_id == user.id)
+            .where(Document.title == filename)
             .where(Document.deleted_at.is_(None))
         )
+        if parent_id is None:
+            stmt = stmt.where(Document.parent_id.is_(None))
+        else:
+            stmt = stmt.where(Document.parent_id == parent_id)
         result = await self.session.execute(stmt)
-        return result.scalar_one_or_none()
+        return result.scalars().first()
     async def _create_or_update_document(
     self,
     *,
@@ -131,16 +134,20 @@ class MetadataRepository(BaseRepository[Document]):
     parent_id: Optional[int] = None,
     ) -> Document:
         if existing:
+            values = dict(
+                file_path=file_path,
+                file_hash=file_hash,
+                created_at=datetime.now(timezone.utc),
+                is_archived=False,
+                deleted_at=None,
+            )
+            if parent_id is not None and parent_id != existing.parent_id:
+                values["parent_id"] = parent_id
+
             stmt = (
                 update(Document)
                 .where(Document.id == existing.id)
-                .values(
-                    file_path=file_path,
-                    file_hash=file_hash,
-                    created_at=datetime.now(timezone.utc),
-                    is_archived=False,
-                    deleted_at=None,
-                )
+                .values(**values)
                 .returning(Document)
             )
             result = await self.session.execute(stmt)
@@ -184,13 +191,13 @@ class MetadataRepository(BaseRepository[Document]):
 
    
 
-    async def _stream_and_hash(self, file: UploadFile, user: TokenData, folder: Optional[str]):
+    async def _stream_and_hash(self, file: UploadFile, user: TokenData, folder: Optional[str], filename: str):
         upload_root = Path(settings.upload_dir)
         # Base directory for this tenant/department
         base_dir = upload_root / str(user.tenant_id) / str(user.department_id)
 
         # file.filename already includes any subfolder information (e.g. "folder1/file1.txt")
-        relative_path = Path(file.filename)
+        relative_path = Path(filename)
 
         # Final path: base_dir + relative path
         file_path = base_dir / relative_path
@@ -555,6 +562,8 @@ class MetadataRepository(BaseRepository[Document]):
     async def bulk_create_folders(
         self, folder_paths: List[str], *, tenant_id: UUID, user_id: UUID, department_id: UUID
     ) -> Dict[str, int]:
+        # Normalize once to POSIX
+        folder_paths = [PurePosixPath(p).as_posix() for p in folder_paths]
         existing = await self.get_existing_folders(folder_paths, tenant_id)
         
         # Sort paths to create parent folders first
@@ -593,26 +602,29 @@ class MetadataRepository(BaseRepository[Document]):
         self, *,
         file: UploadFile,
         folder: Optional[str],
+        filename: str,
         user: TokenData,
         parent_map: dict[str, int]
     ):
         try:
-            file_hash, file_size, file_path = await self._stream_and_hash(file, user, folder)
-            existing = await self._find_existing(file.filename, user)
+            file_hash, file_size, file_path = await self._stream_and_hash(file, user, folder, filename)
+            # Normalize folder defensively 5555ter already normalized)
+            if folder is not None:
+                folder = PurePosixPath(folder).as_posix()
+            parent_id = parent_map.get(folder) if folder is not None else None
+            existing = await self._find_existing(filename, user, parent_id)
             if existing and existing.file_hash == file_hash:
                 return {"response": "no_change", "document": existing}
-            parent_id = None
-            if folder:                      # '' → корень
-                parent_id = parent_map.get(folder.rstrip("/"))
 
             document = await self._create_or_update_document(
                 file=file,
+                filename=filename,
                 file_path=file_path,
                 file_hash=file_hash,
                 file_size=file_size,
                 user=user,
                 existing=existing,
-                parent_id=parent_id,        # ← передаём
+                parent_id=parent_id,
             )
             return {"response": "success", "document": document}
         except Exception:

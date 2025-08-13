@@ -18,6 +18,7 @@ from app.schemas.documents.document_sharing import SharingRequest
 from fastapi import UploadFile
 from sqlalchemy.exc import SQLAlchemyError
 from app.db.tables.documents.documents import Document
+from pathlib import PurePosixPath
 
 from app.db.models import logger
 
@@ -161,41 +162,48 @@ async def upload_folder_bulk(
     Безопасная массовая загрузка вложенных файлов и папок с транзакцией
     """
 
-    # Собираем все уникальные вложенные пути
-    folder_paths = set()
+    # 1) Собираем все уникальные вложенные пути (POSIX)
+    folder_paths: set[str] = set()
+    for f in files:
+        rel = PurePosixPath(f.filename)
+        parts = rel.parts[:-1]
+        for i in range(len(parts)):
+            folder_paths.add("/".join(parts[: i + 1]))
+
+    # 2) Создаём (или получаем) все папки в БД и строим карту путей → id
+    folder_map: dict[str, int] = {}
+    try:
+        if folder_paths:
+            folder_map = await repo.bulk_create_folders(
+                list(folder_paths),
+                tenant_id=user.tenant_id,
+                user_id=user.id,
+                department_id=user.department_id,
+            )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка при создании папок: {e}")
+
+    # 3) Обрабатываем файлы стримингом
+    results: list = []
     for file in files:
-        path_parts = Path(file.filename).parts[:-1]
-        for i in range(len(path_parts)):
-            folder_paths.add("/".join(path_parts[:i+1]))
+        try:
+            rel = PurePosixPath(file.filename)
+            parent_posix = rel.parent.as_posix()
+            folder_norm = "" if parent_posix == "." else parent_posix
 
-    async with repo.session.begin():  # одна транзакция на всё
-        # 1. Создаём все папки одним блоком
-        folder_map = await repo.bulk_create_folders(
-            sorted(folder_paths), 
-            tenant_id=user.tenant_id, 
-            user_id=user.id,
-            department_id=user.department_id
-        )
+            result = await repo.upload_with_streaming(
+                file=file,
+                folder=folder_norm,
+                user=user,
+                parent_map=folder_map,
+            )
+            results.append(result)
+        except Exception as e:
+            if hasattr(e, "file_path") and e.file_path:
+                Path(e.file_path).unlink(missing_ok=True)
+            raise HTTPException(status_code=500, detail=f"Ошибка при загрузке {file.filename}: {e}")
 
-        results = []
-
-        # 2. Обрабатываем файлы стримингом
-        for file in files:
-            try:
-                result = await repo.upload_with_streaming(
-                    file=file,
-                    folder=os.path.dirname(file.filename),
-                    user=user,
-                    parent_map=folder_map
-                )
-                results.append(result)
-            except Exception as e:
-                # Очищаем файл, если упал
-                if hasattr(e, "file_path") and e.file_path:
-                    Path(e.file_path).unlink(missing_ok=True)
-                raise HTTPException(status_code=500, detail=f"Ошибка при загрузке {file.filename}: {e}")
-
-        return {"uploaded": len(results), "results": results}
+    return {"uploaded": len(results), "results": results}
 
 @router.post(
     "/upload",
@@ -218,9 +226,11 @@ async def upload_documents(
         # Handle single folder upload (existing logic)
         results = []
         for file in files:
+            # Normalize single folder input to POSIX (if provided)
+            folder_norm = None if folder is None else PurePosixPath(folder).as_posix()
             result = await repo.upload_with_streaming(
                 file=file,
-                folder=folder,
+                folder=folder_norm,
                 user=user,
                 parent_map={}  # Empty map for single file upload
             )
