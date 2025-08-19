@@ -1,3 +1,4 @@
+from fileinput import filename
 import os
 from typing import List, Optional, Union
 from uuid import UUID
@@ -16,7 +17,6 @@ from app.schemas.auth.bands import TokenData
 from app.schemas.documents.documents_metadata import DocumentMetadataRead
 from app.schemas.documents.document_sharing import SharingRequest
 from fastapi import UploadFile
-from sqlalchemy.exc import SQLAlchemyError
 from app.db.tables.documents.documents import Document
 from pathlib import PurePosixPath
 
@@ -191,9 +191,12 @@ async def upload_folder_bulk(
             parent_posix = rel.parent.as_posix()
             folder_norm = "" if parent_posix == "." else parent_posix
 
+            filename = rel.name
+
             result = await repo.upload_with_streaming(
                 file=file,
                 folder=folder_norm,
+                filename=filename,
                 user=user,
                 parent_map=folder_map,
             )
@@ -228,11 +231,14 @@ async def upload_documents(
         for file in files:
             # Normalize single folder input to POSIX (if provided)
             folder_norm = None if folder is None else PurePosixPath(folder).as_posix()
+            filename = PurePosixPath(file.filename).name
+
             result = await repo.upload_with_streaming(
                 file=file,
                 folder=folder_norm,
+                filename=filename,
                 user=user,
-                parent_map={}  # Empty map for single file upload
+                parent_map={},  # Empty map for single file upload
             )
             results.append(result)
         return {"uploaded": len(results), "results": results}

@@ -126,6 +126,7 @@ class MetadataRepository(BaseRepository[Document]):
     self,
     *,
     file: UploadFile,
+    filename: str,
     file_path: str,
     file_hash: str,
     file_size: int,
@@ -154,8 +155,8 @@ class MetadataRepository(BaseRepository[Document]):
             return result.scalar_one()
 
         new_doc = Document(
-            name=file.filename,
-            title=file.filename,
+            name=filename,
+            title=filename,
             tenant_id=user.tenant_id,
             department_id=user.department_id,
             owner_id=user.id,
@@ -334,8 +335,7 @@ class MetadataRepository(BaseRepository[Document]):
             await self._execute_update(db_document, changes)
 
         else:
-            # This condition will be activated when, the new version of file is added by a privileged member
-            # here privileged member is one who have access to update the document.
+            # This condition will be activated when, the new version of file is added by a privileged member # here privileged member is one who have access to update the document.
             db_document = await self.get_doc(filename=str(document))
             changes = await self._extract_changes(document_patch)
 
@@ -347,17 +347,17 @@ class MetadataRepository(BaseRepository[Document]):
     async def delete(self, document: Union[str, UUID], owner: TokenData) -> None:
         try:
             db_document = await self._get_instance(document=document, owner=owner)
-            
+
             if db_document is None:
                 raise http_404(msg=f"No document found with identifier: {document}")
-            
+
             # Set both deleted_at timestamp and status to deleted for consistency
             db_document.deleted_at = datetime.now(timezone.utc)
             db_document.status = DocStatus.deleted
             await self._delete_access(document=db_document)
             self.session.add(db_document)
             await self.session.commit()
-            
+
         except HTTPException:
             # Re-raise HTTP exceptions as-is
             raise
@@ -367,7 +367,6 @@ class MetadataRepository(BaseRepository[Document]):
             raise http_404(msg=f"Failed to delete document: {document}") from e
 
     async def bin_list(self, owner: TokenData) -> dict:
-
         stmt = (
             select(Document)
             .where(Document.owner_id == owner.id)
