@@ -25,14 +25,12 @@ def mail_service(
     message["Subject"] = subject
     message.attach(MIMEText(content, _subtype="plain"))
 
-    # Open file in binary mode
     if file_path is not None:
         with open(file_path, "rb") as attachment:
             # Below line adds file as application/octet_stream
             part = MIMEBase("application", "octet_stream")
             part.set_payload(attachment.read())
 
-        # Encoding file in ASCII characters for sending emails
         encoders.encode_base64(part)
 
         # header as attachment

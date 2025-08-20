@@ -3,8 +3,6 @@ import os
 from typing import List, Optional, Union
 from uuid import UUID
 from pathlib import Path
-
-from fastapi import APIRouter, status, File, UploadFile, Depends, HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy.engine import Row
 from app.api.dependencies.auth_utils import get_current_user
@@ -16,7 +14,9 @@ from app.db.repositories.documents.documents_metadata import MetadataRepository
 from app.schemas.auth.bands import TokenData
 from app.schemas.documents.documents_metadata import DocumentMetadataRead
 from app.schemas.documents.document_sharing import SharingRequest
-from fastapi import UploadFile
+from fastapi import (
+    APIRouter, Depends, File, HTTPException, UploadFile, status, Query
+)
 from app.db.tables.documents.documents import Document
 from pathlib import PurePosixPath
 
@@ -152,59 +152,91 @@ async def get_document_preview(
         raise http_400(msg="File type is not supported for preview")
     return FileResponse(path, media_type=media_type, filename=meta["name"])
 
-@router.post("/upload-folder-bulk")
+@router.post("/upload-folder-bulk", status_code=status.HTTP_200_OK)
 async def upload_folder_bulk(
     files: List[UploadFile] = File(...),
+    parent_id: Optional[int] = None,  # read from query string automatically
     user: TokenData = Depends(get_current_user),
-    repo: MetadataRepository = Depends(get_repository(MetadataRepository))
+    repo: MetadataRepository = Depends(get_repository(MetadataRepository)),
 ):
     """
-    Безопасная массовая загрузка вложенных файлов и папок с транзакцией
+    Safe bulk upload of nested files/folders.
+
+    - Preserves subfolder structure from UploadFile.filename (relativePath/webkitRelativePath).
+    - If `parent_id` provided, anchors the entire uploaded tree under that folder.
     """
 
-    # 1) Собираем все уникальные вложенные пути (POSIX)
+    if not files:
+        raise HTTPException(status_code=400, detail="No files were provided.")
+
+    # 1) Collect all unique nested folder paths (POSIX)
     folder_paths: set[str] = set()
     for f in files:
         rel = PurePosixPath(f.filename)
-        parts = rel.parts[:-1]
-        for i in range(len(parts)):
-            folder_paths.add("/".join(parts[: i + 1]))
 
-    # 2) Создаём (или получаем) все папки в БД и строим карту путей → id
-    folder_map: dict[str, int] = {}
+        # basic safety
+        if rel.is_absolute() or ".." in rel.parts:
+            raise HTTPException(status_code=400, detail=f"Invalid path: {f.filename}")
+
+        parts = rel.parts[:-1]
+        accum = []
+        for part in parts:
+            accum.append(part)
+            folder_paths.add("/".join(accum))
+
+    # 2) Create/get folders and build path→id map (anchored to parent_id)
     try:
+        folder_map: dict[str, int] = {}
         if folder_paths:
             folder_map = await repo.bulk_create_folders(
                 list(folder_paths),
                 tenant_id=user.tenant_id,
                 user_id=user.id,
                 department_id=user.department_id,
+                base_parent_id=parent_id,
             )
     except Exception as e:
+        try:
+            await repo.session.rollback()
+        except Exception:
+            pass
         raise HTTPException(status_code=500, detail=f"Ошибка при создании папок: {e}")
 
-    # 3) Обрабатываем файлы стримингом
+    # 3) Stream files and upsert metadata
     results: list = []
-    for file in files:
-        try:
+    try:
+        for file in files:
             rel = PurePosixPath(file.filename)
             parent_posix = rel.parent.as_posix()
             folder_norm = "" if parent_posix == "." else parent_posix
-
             filename = rel.name
 
             result = await repo.upload_with_streaming(
                 file=file,
-                folder=folder_norm,
+                folder=folder_norm or None,
                 filename=filename,
                 user=user,
                 parent_map=folder_map,
+                base_parent_id=parent_id,  # <<— don’t forget this
             )
             results.append(result)
-        except Exception as e:
-            if hasattr(e, "file_path") and e.file_path:
-                Path(e.file_path).unlink(missing_ok=True)
-            raise HTTPException(status_code=500, detail=f"Ошибка при загрузке {file.filename}: {e}")
+
+        try:
+            await repo.session.commit()
+        except Exception:
+            pass
+
+    except Exception as e:
+        if hasattr(e, "file_path") and getattr(e, "file_path"):
+            Path(getattr(e, "file_path")).unlink(missing_ok=True)
+        try:
+            await repo.session.rollback()
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=500,
+            detail=f"Ошибка при загрузке {getattr(file, 'filename', '')}: {e}",
+        )
 
     return {"uploaded": len(results), "results": results}
 
@@ -239,7 +271,15 @@ async def upload_documents(
                 filename=filename,
                 user=user,
                 parent_map={},  # Empty map for single file upload
+                base_parent_id=parent_id
             )
             results.append(result)
         return {"uploaded": len(results), "results": results}
 
+@router.get("/children/{parent_id}")
+async def list_children(
+    parent_id: Optional[int] = None,
+    repo: MetadataRepository = Depends(get_repository(MetadataRepository)),
+    user: TokenData = Depends(get_current_user),
+):
+    return await repo.list_children(owner_id=user.id, parent_id=parent_id)

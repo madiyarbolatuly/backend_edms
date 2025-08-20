@@ -20,6 +20,11 @@ from app.schemas.documents.bands import DocumentMetadataPatch
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.dependencies.database import get_async_session
 from sqlalchemy import select
+# router: /api/v2/metadata
+from typing import Optional, Dict, List, Union
+from uuid import UUID
+from fastapi import Query
+
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/v2/u/login")
 
@@ -55,34 +60,23 @@ async def upload_document_metadata(
     return await repository.upload(document_upload=document_upload)
 
 
+
+
 @router.get(
     "",
-    response_model=Dict[str, Union[List[DocumentMetadataRead], Any]],
+    response_model=Dict[str, Union[List[DocumentMetadataRead], int]],
     status_code=status.HTTP_200_OK,
     name="get_documents_metadata",
 )
 async def get_documents_metadata(
-    limit: int = Query(default=10, lt=100),
+    limit: int = Query(default=200, lt=5000),
     offset: int = Query(default=0),
-    repository: MetadataRepository = Depends(
-        get_repository(MetadataRepository)
-    ),
+    parent_id: Optional[UUID] = Query(default=None, description="Folder id; null = root"),
+    recursive: bool = Query(default=False),
+    repository: MetadataRepository = Depends(get_repository(MetadataRepository)),
     user: TokenData = Depends(get_current_user),
-) -> Dict[str, Union[List[DocumentMetadataRead], Any]]:
-    """
-    Retrieves a list of document metadata.
-
-    Args:
-        limit (int): The maximum number of documents to retrieve. Defaults to 10.
-        offset (int): The number of documents to skip. Defaults to 0.
-        repository (MetadataRepository): The repository for managing document metadata.
-        user (TokenData): The token data of the authenticated user.
-
-    Returns:
-        Dict[str, Union[List[DocumentMetadataRead], Any]]: A dictionary containing the list of document metadata.
-    """
-
-    return await repository.doc_list(limit=limit, offset=offset, owner=user)
+) -> Dict[str, Union[List[DocumentMetadataRead], int]]:
+    return await repository.doc_list(owner=user, parent_id=parent_id, recursive=recursive, limit=limit, offset=offset)
 
 
 @router.get(

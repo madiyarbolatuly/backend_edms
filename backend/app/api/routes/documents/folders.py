@@ -32,10 +32,12 @@ async def create_folder(
 )
 async def list_folder_children(
     parent_id: UUID,
+    recursive: bool = False,   # 👈 allow query param
     current_user=Depends(get_current_user),
     repo: MetadataRepository = Depends(get_repository(MetadataRepository)),
 ):
-    """
-    List folders and files inside the specified folder.
-    """
-    return await repo.list_children(owner_id=current_user.id, parent_id=parent_id)
+    return await repo.list_children(
+        owner_id=current_user.id,
+        parent_id=parent_id,
+        recursive=recursive
+    )

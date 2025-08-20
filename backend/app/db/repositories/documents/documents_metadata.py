@@ -29,6 +29,8 @@ from app.db.tables.documents.permissions import doc_user_access
 from enum import Enum
 from app.core.config import settings
 from app.db.models import logger
+from sqlalchemy.orm import aliased
+from sqlalchemy import select, update, insert, delete
 
 class MetadataRepository(BaseRepository[Document]):
 
@@ -123,52 +125,73 @@ class MetadataRepository(BaseRepository[Document]):
         result = await self.session.execute(stmt)
         return result.scalars().first()
     async def _create_or_update_document(
-    self,
-    *,
-    file: UploadFile,
-    filename: str,
-    file_path: str,
-    file_hash: str,
-    file_size: int,
-    user: TokenData,
-    existing: Optional[Document],
-    parent_id: Optional[int] = None,
-    ) -> Document:
-        if existing:
-            values = dict(
+        self,
+        *,
+        file: UploadFile,
+        filename: str,
+        file_path: str,
+        file_hash: str,
+        file_size: int,
+        user: TokenData,
+        existing: Optional[Document],
+        parent_id: Optional[int] = None,
+        ) -> Document:
+            if existing:
+                values = dict(
+                    file_path=file_path,
+                    file_hash=file_hash,
+                    created_at=datetime.now(timezone.utc),
+                    is_archived=False,
+                    deleted_at=None,
+                )
+                if parent_id is not None and parent_id != existing.parent_id:
+                    values["parent_id"] = parent_id
+
+                stmt = (
+                    update(Document)
+                    .where(Document.id == existing.id)
+                    .values(**values)
+                    .returning(Document)
+                )
+                result = await self.session.execute(stmt)
+                return result.scalar_one()
+
+            new_doc = Document(
+                name=filename,
+                title=filename,
+                tenant_id=user.tenant_id,
+                department_id=user.department_id,
+                owner_id=user.id,
+                file_type="file",
                 file_path=file_path,
                 file_hash=file_hash,
                 created_at=datetime.now(timezone.utc),
-                is_archived=False,
-                deleted_at=None,
+                parent_id=parent_id,
             )
-            if parent_id is not None and parent_id != existing.parent_id:
-                values["parent_id"] = parent_id
+            self.session.add(new_doc)
+            await self.session.flush()
+            return new_doc
 
-            stmt = (
-                update(Document)
-                .where(Document.id == existing.id)
-                .values(**values)
-                .returning(Document)
+   # repo
+    async def list_children(
+        self, owner_id: str, parent_id: Optional[int] = None, recursive: bool = False
+    ) -> List[DocumentMetadataRead]:
+        if not recursive:
+            q = await self.session.execute(
+                select(Document)
+                .where(Document.owner_id == owner_id)
+                .where(Document.parent_id == parent_id)
             )
-            result = await self.session.execute(stmt)
-            return result.scalar_one()
+            return [DocumentMetadataRead.from_orm(r) for r in q.scalars().all()]
 
-        new_doc = Document(
-            name=filename,
-            title=filename,
-            tenant_id=user.tenant_id,
-            department_id=user.department_id,
-            owner_id=user.id,
-            file_type="file",
-            file_path=file_path,
-            file_hash=file_hash,
-            created_at=datetime.now(timezone.utc),
-            parent_id=parent_id,
-        )
-        self.session.add(new_doc)
-        await self.session.flush()
-        return new_doc
+        # Recursive CTE
+        doc_alias = aliased(Document)
+        base = select(Document).where(Document.owner_id == owner_id).where(Document.parent_id == parent_id)
+        recursive = select(Document).join(doc_alias, Document.parent_id == doc_alias.id)
+        cte = base.union_all(recursive).cte(name="recursive_children", recursive=True)
+
+        result = await self.session.execute(select(cte))
+        return [DocumentMetadataRead.from_orm(d) for d in result.scalars().all()]
 
 
     async def _update_access_and_permission(self, db_document, changes, user_repo):
@@ -194,21 +217,15 @@ class MetadataRepository(BaseRepository[Document]):
 
     async def _stream_and_hash(self, file: UploadFile, user: TokenData, folder: Optional[str], filename: str):
         upload_root = Path(settings.upload_dir)
-        # Base directory for this tenant/department
         base_dir = upload_root / str(user.tenant_id) / str(user.department_id)
 
-        # file.filename already includes any subfolder information (e.g. "folder1/file1.txt")
-        relative_path = Path(filename)
-
-        # Final path: base_dir + relative path
+        # ✅ include folder if present
+        relative_path = (Path(folder) / filename) if folder else Path(filename)
         file_path = base_dir / relative_path
 
-        # Make sure all parent directories exist
         file_path.parent.mkdir(parents=True, exist_ok=True)
-
         sha256 = hashlib.sha256()
         total_size = 0
-
         with file_path.open("wb") as f:
             while True:
                 chunk = await file.read(1024 * 1024)
@@ -217,11 +234,10 @@ class MetadataRepository(BaseRepository[Document]):
                 f.write(chunk)
                 sha256.update(chunk)
                 total_size += len(chunk)
+        await file.seek(0)
 
-        await file.seek(0)  # reset file stream if reused
-
-    # Return path relative to upload_root so it matches your DB schema
         return sha256.hexdigest(), total_size, str(file_path.relative_to(upload_root))
+
 
 
     async def _update_doc_user_access(self, db_document, user_id):
@@ -281,31 +297,71 @@ class MetadataRepository(BaseRepository[Document]):
         return DocumentMetadataRead(**db_document.__dict__)
 
     async def doc_list(
-        self, owner: TokenData, limit: int = 10, offset: int = 0
-    ) -> Dict[str, Union[List[DocumentMetadataRead], Any]]:
+        self,
+        owner: TokenData,
+        parent_id: Optional[int] = None,
+        recursive: bool = False,
+        limit: int = 200,
+        offset: int = 0,
+    ):
+        if not recursive:
+            stmt = (
+                select(Document)
+                .where(Document.tenant_id == owner.tenant_id)
+                .where(Document.department_id == owner.department_id)
+                .where(Document.status != DocStatus.deleted)
+            )
+            if parent_id is None:
+                stmt = stmt.where(Document.parent_id.is_(None))
+            else:
+                stmt = stmt.where(Document.parent_id == parent_id)
 
+            stmt = stmt.offset(offset).limit(limit)
+            result = await self.session.execute(stmt)
+            docs = result.scalars().all()
+            return {
+                "documents": [DocumentMetadataRead.from_orm(doc) for doc in docs],
+                "count": len(docs),
+            }
+
+        # ✅ Recursive mode
+        doc_alias = aliased(Document)
+
+        base = (
+            select(Document)
+            .where(Document.tenant_id == owner.tenant_id)
+            .where(Document.department_id == owner.department_id)
+            .where(Document.status != DocStatus.deleted)
+        )
+        if parent_id is None:
+            base = base.where(Document.parent_id.is_(None))
+        else:
+            base = base.where(Document.parent_id == parent_id)
+
+        # Correct recursive join: join against the CTE, not just alias
+        recursive_q = (
+            select(Document)
+            .join(doc_alias, Document.parent_id == doc_alias.id)
+        )
+
+        cte = base.union_all(recursive_q).cte(name="recursive_docs", recursive=True)
+
+        # Join CTE back to Document to get full rows
         stmt = (
-            select(self.doc_cls)
-            .where(self.doc_cls.tenant_id == owner.tenant_id)
-            .where(self.doc_cls.status != DocStatus.deleted)
+            select(Document)
+            .join(cte, Document.id == cte.c.id)
             .offset(offset)
             .limit(limit)
         )
-
         result = await self.session.execute(stmt)
-        result_list = result.scalars().all()
-
-        # Приведение Enum (если нужно)
-        for doc in result_list:
-            if isinstance(doc.status, Enum) and not isinstance(doc.status, DocStatus):
-                doc.status = DocStatus(doc.status.value)
-
-        result_models = [DocumentMetadataRead.model_validate(doc) for doc in result_list]
+        docs = result.scalars().all()
 
         return {
-            f"documents of {owner.username}": result_models,
-            "no_of_docs": len(result_models),
+            "documents": [DocumentMetadataRead.from_orm(doc) for doc in docs],
+            "count": len(docs),
         }
+
+    
 
     async def get(
         self, document: Union[str, UUID], owner: TokenData
@@ -404,8 +460,8 @@ class MetadataRepository(BaseRepository[Document]):
                         self.session.add(db_document)
                         await self.session.commit()
                         return DocumentMetadataRead(**db_document.__dict__)
-            raise http_409(msg="Doc is not deleted")
-        raise http_404(msg="Doc does not exists")
+            raise http_409(msg="Document is not deleted")
+        raise http_404(msg="Document does not exists")
 
     async def perm_delete_a_doc(self, document: UUID | None, owner: TokenData) -> None:
 
@@ -458,8 +514,8 @@ class MetadataRepository(BaseRepository[Document]):
             await self._execute_update(db_document=doc, changes=change)
             return DocumentMetadataRead(**doc.__dict__)
         if doc and doc.status != DocStatus.archived:
-            raise http_409(msg="Doc is not archived")
-        raise http_404(msg="Doc does not exits")
+            raise http_409(msg="Document is not archived")
+        raise http_404(msg="Document does not exits")
 
     async def create_folder(self, owner_id: str, data: FolderCreate) -> FolderRead:
         folder = Document(
@@ -473,16 +529,7 @@ class MetadataRepository(BaseRepository[Document]):
         await self.session.refresh(folder)
         return FolderRead.from_orm(folder)
 
-    async def list_children(self, owner_id: str, parent_id: Optional[int] = None) -> List[FolderRead]:
-        q = (
-            await self.session.execute(
-                select(Document)
-                .where(Document.owner_id == owner_id)
-                .where(Document.parent_id == parent_id)
-            )
-        )
-        results = q.scalars().all()
-        return [FolderRead.from_orm(r) for r in results]
+  
 
     async def archive_document(self, document_id: UUID):
         stmt = update(Document).where(Document.id == document_id).values(is_archived=True)
@@ -558,75 +605,81 @@ class MetadataRepository(BaseRepository[Document]):
     
 
         
+    # documents_metadata.py
+
     async def bulk_create_folders(
-        self, folder_paths: List[str], *, tenant_id: UUID, user_id: UUID, department_id: UUID
-    ) -> Dict[str, int]:
-        # Normalize once to POSIX
+        self,
+        folder_paths: list[str],
+        *,
+        tenant_id,
+        user_id,
+        department_id,
+        base_parent_id: int | None = None,   # NEW
+    ) -> dict[str, int]:
         folder_paths = [PurePosixPath(p).as_posix() for p in folder_paths]
         existing = await self.get_existing_folders(folder_paths, tenant_id)
-        
-        # Sort paths to create parent folders first
         sorted_paths = sorted(folder_paths)
-        path_to_folder: dict[str, int] = {f.file_path: f.id for f in existing}
-        
+        path_to_id = {f.file_path: f.id for f in existing}
+
         for path in sorted_paths:
-            if path in path_to_folder:
+            if path in path_to_id:
                 continue
-            
-            # Find parent folder
             parent_path = "/".join(path.split("/")[:-1]) if "/" in path else None
-            parent_id = path_to_folder[parent_path] if parent_path and parent_path in path_to_folder else None
-            
+            # if there's no parent_path, hang it under base_parent_id (the opened folder)
+            parent_id = path_to_id.get(parent_path) if parent_path else base_parent_id
+
             folder = Document(
                 name=path.split("/")[-1],
                 title=path.split("/")[-1],
+                file_type="folder",                 # ensure consistency
+                parent_id=parent_id,
+                tenant_id=tenant_id,
+                department_id=department_id,
+                owner_id=user_id,
                 status=DocStatus.private,
                 is_archived=False,
                 is_favourited=False,
                 file_path=path,
-                tenant_id=tenant_id,
-                department_id=department_id,
-                owner_id=user_id,
-                file_type="folder",
-                parent_id=parent_id,
                 created_at=datetime.now(timezone.utc),
             )
             self.session.add(folder)
             await self.session.flush()
-            path_to_folder[path] = folder.id
-        
-        return path_to_folder
+            path_to_id[path] = folder.id
+        return path_to_id
+
+
+    # documents_metadata.py
 
     async def upload_with_streaming(
-        self, *,
+        self,
+        *,
         file: UploadFile,
-        folder: Optional[str],
+        folder: str | None,
         filename: str,
         user: TokenData,
-        parent_map: dict[str, int]
+        parent_map: dict[str, int],
+        base_parent_id: int | None = None,   # NEW
     ):
-        try:
-            file_hash, file_size, file_path = await self._stream_and_hash(file, user, folder, filename)
-            # Normalize folder defensively 5555ter already normalized)
-            if folder is not None:
-                folder = PurePosixPath(folder).as_posix()
-            parent_id = parent_map.get(folder) if folder is not None else None
-            existing = await self._find_existing(filename, user, parent_id)
-            if existing and existing.file_hash == file_hash:
-                return {"response": "no_change", "document": existing}
+        file_hash, file_size, file_path = await self._stream_and_hash(file, user, folder, filename)
 
-            document = await self._create_or_update_document(
-                file=file,
-                filename=filename,
-                file_path=file_path,
-                file_hash=file_hash,
-                file_size=file_size,
-                user=user,
-                existing=existing,
-                parent_id=parent_id,
-            )
-            return {"response": "success", "document": document}
-        except Exception:
-            if 'file_path' in locals():
-                Path(file_path).unlink(missing_ok=True)
-            raise
+        if folder is not None:
+            folder = PurePosixPath(folder).as_posix()
+
+        # if no folder (top level), fall back to the opened folder id
+        parent_id = parent_map.get(folder) if folder else base_parent_id
+
+        existing = await self._find_existing(filename, user, parent_id)
+        if existing and existing.file_hash == file_hash:
+            return {"response": "no_change", "document": existing}
+
+        document = await self._create_or_update_document(
+            file=file,
+            filename=filename,
+            file_path=file_path,
+            file_hash=file_hash,
+            file_size=file_size,
+            user=user,
+            existing=existing,
+            parent_id=parent_id,
+        )
+        return {"response": "success", "document": document}
