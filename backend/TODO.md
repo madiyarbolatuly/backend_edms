@@ -20,7 +20,4 @@ remove
 folder bulk upload
 tenants
 
-INSERT INTO tenants (id, name, created_at) VALUES
-(1, 'GQ Group', now()),
-(2, 'GQ Contract', now()),
-(3, 'GQ Group Invest', now());
+

@@ -25,4 +25,5 @@ SUPPORTED_FILE_TYPES = {
     "audio/mpeg": "mp3",
     "audio/wav": "wav",
     "audio/x-ms-wma": "wma",
+    "application/x-zip-compressed": "zip",
 }

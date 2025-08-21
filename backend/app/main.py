@@ -32,7 +32,7 @@ app = FastAPI(
 def _dev_stub_user() -> TokenData:
     return TokenData(
         id="01DEVUSERXXXXXXXXXXXXX",
-        username="dev-admin",
+        username="admin",
         role="admin",
         tenant_id=1,
         department_id=1,
