@@ -69,8 +69,8 @@ async def upload_document_metadata(
     name="get_documents_metadata",
 )
 async def get_documents_metadata(
-    limit: int = Query(default=200, lt=5000),
-    offset: int = Query(default=0),
+    limit: int = Query(default=5000, lt=5000, ge=1),
+    offset: int = Query(default=0, ge=0),
     parent_id: Optional[UUID] = Query(default=None, description="Folder id; null = root"),
     recursive: bool = Query(default=False),
     repository: MetadataRepository = Depends(get_repository(MetadataRepository)),
