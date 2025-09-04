@@ -1,11 +1,13 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from fastapi.openapi.utils import get_openapi
 from contextlib import asynccontextmanager
 import pathlib
-
+         # needed for download stub
+from app.api.routes.onlyoffice import router as onlyoffice_router  # import ONLYOFFICE router
+import os 
 from app.api.router import router
 from app.core.config import settings
 from app.db.models import check_tables
@@ -58,6 +60,7 @@ app.mount(
 )  # :contentReference[oaicite:6]{index=6}
 
 app.include_router(router, prefix=settings.api_prefix)
+app.include_router(onlyoffice_router)
 
 
 

@@ -6,7 +6,7 @@ from email import encoders
 from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-
+from fastapi import HTTPException
 from app.core.config import settings
 from app.core.exceptions import http_500
 
@@ -50,4 +50,4 @@ def mail_service(
             server.login(sender_email, password)
             server.sendmail(sender_email, receiver_email, message.as_string())
     except Exception as e:
-        raise http_500(msg="There was some error sending email...") from e
+        raise HTTPException(status_code=500, detail=f"Email error: {str(e)}")

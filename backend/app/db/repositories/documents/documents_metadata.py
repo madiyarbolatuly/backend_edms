@@ -517,17 +517,59 @@ class MetadataRepository(BaseRepository[Document]):
             raise http_409(msg="Document is not archived")
         raise http_404(msg="Document does not exits")
 
-    async def create_folder(self, owner_id: str, data: FolderCreate) -> FolderRead:
+   
+
+    async def create_folder(
+        self,
+        owner_id: str,
+        tenant_id: int,
+        department_id: Optional[int],
+        data: FolderCreate,
+    ):
+        folder_name = (data.name or "").strip()
+        if not folder_name:
+            raise ValueError("Folder name is required")
+
+        # вычисляем file_path для папки
+        parent_path = ""
+        if data.parent_id:
+            parent = await self.session.get(Document, data.parent_id)
+            if not parent:
+                raise ValueError("Parent folder not found")
+            # Берём путь родителя (если по каким-то причинам пустой — fallback на имя)
+            parent_path = (parent.file_path or parent.name or "").strip()
+
+        def join_path(a: str, b: str) -> str:
+            if not a:
+                return b
+            if a.endswith("/"):
+                a = a[:-1]
+            return f"{a}/{b}"
+
+        file_path = join_path(parent_path, folder_name) if parent_path else folder_name
+
         folder = Document(
             owner_id=owner_id,
-            name=data.name,
+            tenant_id=tenant_id,
+            department_id=department_id,
             file_type="folder",
+            document_number=None,          # или генерируй, если нужно
+            title=getattr(data, "title", None) or folder_name,
+            name=folder_name,
+            status="draft",
+            file_path=file_path,           # <-- БОЛЬШЕ НЕ NULL
+            file_hash=None,
             parent_id=data.parent_id,
         )
+
         self.session.add(folder)
-        await self.session.commit()
+        try:
+            await self.session.commit()
+        except Exception:
+            await self.session.rollback()
+            raise
         await self.session.refresh(folder)
-        return FolderRead.from_orm(folder)
+        return folder
 
   
 
@@ -564,6 +606,21 @@ class MetadataRepository(BaseRepository[Document]):
         
         result = (await self.session.execute(stmt)).scalars().all()
         return {"documents": [DocumentMetadataRead.from_orm(doc) for doc in result], "count": len(result)}
+
+    async def favorited_list(self, user: TokenData):
+        stmt = (
+            select(Document)
+            .where(Document.owner_id == user.id)
+            .where(
+                (Document.is_favourited  == True) | 
+                (Document.status == DocStatus.public)
+            )
+            .where(Document.deleted_at.is_(None))
+        )
+        
+        result = (await self.session.execute(stmt)).scalars().all()
+        return {"documents": [DocumentMetadataRead.from_orm(doc) for doc in result], "count": len(result)}
+
 
 
 

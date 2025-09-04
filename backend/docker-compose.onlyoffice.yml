@@ -1,0 +1,14 @@
+version: "3.8"
+
+services:
+  onlyoffice:
+    image: onlyoffice/documentserver:latest
+    container_name: backend-onlyoffice-1
+    ports:
+      - "8085:80"
+    networks:
+      - backend_default   # 👈 attach to backend network
+
+networks:
+  backend_default:
+    external: true        # 👈 reuse the already existing network

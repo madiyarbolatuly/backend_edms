@@ -32,11 +32,13 @@ router = APIRouter(tags=["Document"])
     status_code=status.HTTP_200_OK,
     name="download_document",
 )
+
 @router.get(
     "/file/{file_name}/download",
     status_code=status.HTTP_200_OK,
     name="download_document",
 )
+
 async def download(
     file_name: str,
     metadata_repository: MetadataRepository = Depends(get_repository(MetadataRepository)),

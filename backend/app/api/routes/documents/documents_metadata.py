@@ -24,7 +24,10 @@ from sqlalchemy import select
 from typing import Optional, Dict, List, Union
 from uuid import UUID
 from fastapi import Query
-
+from app.db.tables.documents.documents import Document
+from typing import Optional
+from app.db.tables.documents.documents import Document
+from app.schemas.documents.documents_metadata import FolderCreate
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/v2/u/login")
 
@@ -310,30 +313,6 @@ async def read_users_me(
     }
 
 
-@router.post(
-    "/v2/metadata/upload",
-    response_model=DocumentMetadataRead,
-    status_code=status.HTTP_201_CREATED,
-    name="create_folder"
-)
-async def create_folder(
-    folder: FolderCreate,
-    repository: MetadataRepository = Depends(get_repository(MetadataRepository)),
-    user: TokenData = Depends(get_current_user)
-) -> DocumentMetadataRead:
-    """
-    Create a new folder entry. Does not upload any file content.
-    """
-    metadata = DocumentMetadataCreate(**folder.dict())
-    metadata.owner_id = user.id
-    metadata.type = "folder"
-    # Optional: Validate parent exists and is a folder
-    if metadata.parent_id:
-        parent = await repository.get(document=metadata.parent_id, owner=user)
-        if not parent or getattr(parent, "type", None) != "folder":
-            raise HTTPException(status_code=400, detail="Parent must be a folder.")
-    return await repository.upload(document_upload=metadata)
-
 @router.patch("/{document_id}", response_model=DocumentMetadataRead, status_code=status.HTTP_200_OK, name="patch_document_metadata")
 async def patch_document_metadata(
     document_id: Union[str, UUID],
@@ -376,17 +355,41 @@ async def rename_document(document_id: UUID, repository: MetadataRepository = De
     # ...existing rename logic...
     
 
-@router.put("/{document_name}/star")
+@router.put("/{document_id}/star")
 async def toggle_star(
-    document_name: str, 
+    document_id: str,
     repository: MetadataRepository = Depends(get_repository(MetadataRepository)),
     user: TokenData = Depends(get_current_user)
 ):
-    # Use the existing _get_instance method to find the document by name
-    doc = await repository._get_instance(document=document_name, owner=user)
+    # call _get_instance with the correct param name
+    doc = await repository._get_instance(document=document_id, owner=user)
     if not doc:
-        raise HTTPException(404, detail="Document not found")
-    
-    await repository.toggle_favourited(doc.id)
-    return {"message": "favourited status toggled successfully."}
+        raise HTTPException(status_code=404, detail="Document not found")
 
+    await repository.toggle_favourited(doc.id)
+    return {"message": "Favourited status toggled successfully."}
+
+@router.get(
+    "/favorites/list",
+    response_model=None,
+    status_code=status.HTTP_200_OK,
+    name="favorited_doc_list",
+)
+
+async def list_favorited(
+    repo: MetadataRepository = Depends(get_repository(MetadataRepository)),
+    user: TokenData = Depends(get_current_user),
+) -> Dict[str, List[str] | int]:
+    """
+    Get the list of archived documents.
+
+    Args:
+        repository (MetadataRepository): The repository for document metadata.
+        user (TokenData): The user token data.
+
+    Returns:
+        Dict[str, List[str] | int]: A dictionary containing the list of archived documents.
+
+    """
+
+    return await repo.favorited_list(user=user)

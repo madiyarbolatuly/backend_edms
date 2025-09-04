@@ -9,23 +9,22 @@ from app.schemas.documents.documents_metadata import FolderCreate, DocumentMetad
 
 router = APIRouter(prefix="/folders", tags=["Folders"])
 
-@router.post(
-    "/",  # ← use "/" to avoid trailing-slash ambiguity
-    response_model=DocumentMetadataRead,
-    status_code=status.HTTP_201_CREATED,
-    summary="Create a new folder",
-)
+@router.post("/", response_model=DocumentMetadataRead, status_code=status.HTTP_201_CREATED)
 async def create_folder(
     data: FolderCreate,
     user: TokenData = Depends(get_current_user),
     repo: MetadataRepository = Depends(get_repository(MetadataRepository)),
 ):
-    # (optional) validate parent exists & is a folder
     if data.parent_id:
         parent = await repo.get(document=data.parent_id, owner=user)
         if not parent or getattr(parent, "file_type", getattr(parent, "type", None)) != "folder":
             raise HTTPException(status_code=400, detail="Parent must be a folder.")
-    return await repo.create_folder(owner_id=user.id, data=data)
+    return await repo.create_folder(
+        owner_id=user.id,
+        tenant_id=user.tenant_id,
+        department_id=user.department_id,
+        data=data
+    )
 
 @router.get(
     "/{parent_id}/children",

@@ -13,6 +13,7 @@ from app.schemas.documents.document_sharing import SharingRequest
 from app.api.dependencies.mail_service import mail_service
 # 2.5) resolve recipients
 from app.db.tables.auth.auth import User
+from app.db.repositories.auth.auth import AuthRepository
 
 
 router = APIRouter(tags=["Document Sharing"])
@@ -27,7 +28,7 @@ async def share_link_document(
     user: TokenData = Depends(get_current_user),
 ) -> Dict[str, str]:
     # 1) проверяем документ
-    users_repo = User(metadata_repository.session)
+    users_repo = AuthRepository(metadata_repository.session)
 
     item = await metadata_repository.get(document=document, owner=user)
     if item is None:
