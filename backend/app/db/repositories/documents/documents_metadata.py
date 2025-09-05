@@ -172,6 +172,21 @@ class MetadataRepository(BaseRepository[Document]):
             await self.session.flush()
             return new_doc
 
+    async def get_by_id_visible(self, doc_id: int, user: TokenData) -> Document:
+        q = (
+            select(Document)
+            .where(
+                Document.id == doc_id,
+                Document.tenant_id == user.tenant_id,
+                Document.department_id == user.department_id,
+                # not deleted; tweak if you use another flag/enum
+                Document.deleted_at.is_(None),
+            )
+        )
+        doc = (await self.session.execute(q)).scalar_one_or_none()
+        if not doc:
+            raise http_404(msg=f"No document with id '{doc_id}' found.")
+        return doc
    # repo
     async def list_children(
         self, owner_id: str, parent_id: Optional[int] = None, recursive: bool = False

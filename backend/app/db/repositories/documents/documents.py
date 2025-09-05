@@ -6,6 +6,10 @@ from uuid import UUID
 from sqlalchemy import select, func
 from fastapi import UploadFile
 from starlette.responses import FileResponse
+import zipfile
+import tempfile            # ← fixes "tempfile is not defined"
+
+from starlette.background import BackgroundTask   # ⟵ for cleanup after response
 
 from app.api.dependencies.constants import SUPPORTED_FILE_TYPES
 from app.api.dependencies.repositories import get_file_path
@@ -20,7 +24,7 @@ from app.db.base import BaseRepository
 from app.schemas.auth.bands import TokenData
 from ulid import ULID
 from sqlalchemy.ext.asyncio import AsyncSession
-
+import shutil
 logger = logging.getLogger(__name__)
 
 
@@ -85,6 +89,7 @@ class DocumentRepository(BaseRepository[Document]):
             tenant_id=user.tenant_id,
             department_id=user.department_id,
             owner_id=user.id,
+            
             document_number=str(ULID()),
             title=filename,
             name=filename,
@@ -219,17 +224,66 @@ class DocumentRepository(BaseRepository[Document]):
                 user=user,
             )
 
-    async def download(self, name: str) -> FileResponse:
-        """
-        Returns a FileResponse to stream the named file.
-        """
+    async def download(
+        self,
+        document_id: int,
+        metadata_repo: MetadataRepository,
+        user: TokenData,
+    ) -> FileResponse:
+        # Prefer the repo method if you added it; otherwise fall back to our helper
         try:
-            path = await get_file_path(name)
+            get_by_id_visible = getattr(metadata_repo, "get_by_id_visible", None)
+            meta: Document = (
+                await get_by_id_visible(document_id, user)
+                if callable(get_by_id_visible)
+                else await self._get_meta_visible(document_id, user)
+            )
+        except Exception:
+            logger.error("Download failed, document not found: %s", document_id)
+            raise http_404(msg=f"No document with id '{document_id}' found.")
+
+        # FOLDER ⇒ ZIP
+        if meta.file_type == "folder":
+            tmpdir = tempfile.mkdtemp(prefix="dl-")
+            zippath = Path(tmpdir) / f"{meta.name}.zip"
+
+            # Open once, write many
+            with zipfile.ZipFile(zippath, "w", zipfile.ZIP_DEFLATED) as zipf:
+
+                async def add_recursive(folder_id: int, prefix: str = ""):
+                    # NOTE: if your list_children filters by owner only and that’s a problem,
+                    # add a tenant/department-scoped variant and call it here.
+                    kids = await metadata_repo.list_children(
+                        owner_id=user.id, parent_id=folder_id
+                    )
+                    for child in kids:
+                        if child.file_type == "folder":
+                            await add_recursive(child.id, prefix + child.name + "/")
+                        else:
+                            try:
+                                child_path = await get_file_path(child.file_path)
+                            except FileNotFoundError:
+                                logger.warning("File missing on disk: %s", child.file_path)
+                                continue
+                            zipf.write(child_path, arcname=prefix + child.name)
+
+                await add_recursive(meta.id)
+
+            # Clean temp dir after response is sent
+            return FileResponse(
+                zippath,
+                filename=f"{meta.name}.zip",
+               background=BackgroundTask(shutil.rmtree, tmpdir, ignore_errors=True),
+            )
+
+        # FILE ⇒ stream
+        try:
+            path = await get_file_path(meta.file_path)
         except FileNotFoundError as e:
-            logger.error("Download failed, file not found: %s", name)
+            logger.error("Download failed, file not found on disk: %s", meta.file_path)
             raise http_404(msg=str(e)) from e
 
-        return FileResponse(path, filename=name)
+        return FileResponse(path, filename=meta.name)
 
     async def preview(self, document: Dict[str, Any]) -> FileResponse:
         """

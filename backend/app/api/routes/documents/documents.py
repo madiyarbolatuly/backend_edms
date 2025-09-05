@@ -19,74 +19,21 @@ from fastapi import (
 )
 from app.db.tables.documents.documents import Document
 from pathlib import PurePosixPath
-import shutil
-import tempfile
+
 from fastapi.responses import FileResponse
 from app.db.models import logger
 
 
 router = APIRouter(tags=["Document"])
-
-@router.get(
-    "/file/{file_name}/download",
-    status_code=status.HTTP_200_OK,
-    name="download_document",
-)
-
-@router.get(
-    "/file/{file_name}/download",
-    status_code=status.HTTP_200_OK,
-    name="download_document",
-)
-
-async def download(
-    file_name: str,
+# routes/documents.py
+@router.get("/file/{file_id:int}/download")
+async def download_by_id(
+    file_id: int,
+    repo: DocumentRepository = Depends(get_repository(DocumentRepository)),
     metadata_repository: MetadataRepository = Depends(get_repository(MetadataRepository)),
     user: TokenData = Depends(get_current_user),
-) -> FileResponse:
-    if not file_name:
-        raise http_400(msg="No file name provided.")
-
-    # 1. Get metadata
-    try:
-        metadata = await metadata_repository.get(document=file_name, owner=user)
-    except Exception:
-        raise http_404(msg=f"No file with name '{file_name}' found.")
-    meta = dict(metadata)
-
-    # 2. If it's a folder → zip it
-    if meta["file_type"] == "folder":
-        # Recursively collect children from DB
-        children = await metadata_repository.list_children(owner_id=user.id, parent_id=meta["id"])
-        if not children:
-            raise http_404(msg=f"Folder '{meta['name']}' is empty.")
-
-        # Create temp zip
-        tmp_dir = tempfile.mkdtemp()
-        zip_path = Path(tmp_dir) / f"{meta['name']}.zip"
-
-        import zipfile
-        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
-            async def add_recursive(folder_id: str, prefix: str = ""):
-                kids = await metadata_repository.list_children(owner_id=user.id, parent_id=folder_id)
-                for child in kids:
-                    if child.file_type == "folder":
-                        await add_recursive(child.id, prefix + child.name + "/")
-                    else:
-                        child_path = await get_file_path(child.file_path)
-                        zipf.write(child_path, arcname=prefix + child.name)
-
-            await add_recursive(meta["id"])
-
-        return FileResponse(path=zip_path, filename=f"{meta['name']}.zip")
-
-    # 3. If it's a file (dwg, pdf, etc.)
-    try:
-        path = await get_file_path(meta["file_path"])
-    except FileNotFoundError as e:
-        raise http_404(msg=str(e))
-
-    return FileResponse(path, filename=meta["name"])
+):
+    return await repo.download(file_id, metadata_repository, user)
 
 @router.get(
     "/trash",
