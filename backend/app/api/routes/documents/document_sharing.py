@@ -65,7 +65,7 @@ async def share_link_document_by_id(
         )
 
     # 4) уведомляем по email
-    frontend_base = getattr(settings, "frontend_url", "http://localhost:8080")
+    frontend_base = getattr(settings, "frontend_url", "http://77.245.107.136:8080")
     shared_url = f"{frontend_base}/shared"
 
     if share_request.share_to:
