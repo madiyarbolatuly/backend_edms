@@ -4,7 +4,6 @@ from app.schemas.base import BaseSchema
 from pydantic import Field
 from datetime import datetime
 
-
 from app.schemas.documents.bands import DocumentMetadataBase, DocStatus
 
 
@@ -19,17 +18,20 @@ class DocumentMetadataCreate(DocumentMetadataBase):
     is_archived: bool = False
     is_favourited: bool = False
 
+
 class DocumentMetadataRead(DocumentMetadataBase):
     id: int
     name: str
     file_path: Optional[str] = None
     size: Optional[str] = None
-    tags: Optional[List[str]] = []
+    tags: Optional[List[str]] = Field(default_factory=list)
     status: DocStatus
+
 
 class FolderCreate(BaseSchema):
     name: str = Field(..., description="Folder name")
     parent_id: Optional[int] = Field(None, description="Parent folder ID")
+
 
 class FolderRead(BaseSchema):
     id: UUID
@@ -41,5 +43,4 @@ class FolderRead(BaseSchema):
 
     class Config:
         from_attributes = True
-        orm_mode = True
         arbitrary_types_allowed = True

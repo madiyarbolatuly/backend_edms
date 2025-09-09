@@ -30,13 +30,41 @@ from enum import Enum
 from app.core.config import settings
 from app.db.models import logger
 from sqlalchemy.orm import aliased
-from sqlalchemy import select, update, insert, delete
+from sqlalchemy import select, update, insert, delete, func
+from pathlib import PurePosixPath, Path
 
 class MetadataRepository(BaseRepository[Document]):
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
         self.doc_cls = aliased(Document, name="doc_cls")
+
+
+    def _join_posix(a: str | None, b: str | None) -> str:
+        """
+        Join 2 posix segments without duplicate slashes.
+        If a is falsy, returns b. If b is falsy, returns a. 
+        """
+        a = (a or "").strip("/")
+        b = (b or "").strip("/")
+        if not a: 
+            return b
+        if not b:
+            return a
+        return f"{a}/{b}"
+
+    async def _get_base_parent(self, base_parent_id: int | None, user: TokenData) -> Document | None:
+        if base_parent_id is None:
+            return None
+        q = (
+            select(Document)
+            .where(Document.id == base_parent_id)
+            .where(Document.tenant_id == user.tenant_id)
+            .where(Document.department_id == user.department_id)
+            .where(Document.status != DocStatus.deleted)
+            .where(Document.file_type == "folder")
+        )
+        return (await self.session.execute(q)).scalars().first()
 
     async def _get_instance(self, document: Union[str, UUID], owner: TokenData):
         try:
@@ -316,31 +344,14 @@ class MetadataRepository(BaseRepository[Document]):
         owner: TokenData,
         parent_id: Optional[int] = None,
         recursive: bool = False,
-        limit: int = 200,
+        only_folders: bool = False,
+        files_only: bool = False,        # ← NEW
+        limit: int = 100,
         offset: int = 0,
     ):
-        if not recursive:
-            stmt = (
-                select(Document)
-                .where(Document.tenant_id == owner.tenant_id)
-                .where(Document.department_id == owner.department_id)
-                .where(Document.status != DocStatus.deleted)
-            )
-            if parent_id is None:
-                stmt = stmt.where(Document.parent_id.is_(None))
-            else:
-                stmt = stmt.where(Document.parent_id == parent_id)
-
-            stmt = stmt.offset(offset).limit(limit)
-            result = await self.session.execute(stmt)
-            docs = result.scalars().all()
-            return {
-                "documents": [DocumentMetadataRead.from_orm(doc) for doc in docs],
-                "count": len(docs),
-            }
-
-        # ✅ Recursive mode
-        doc_alias = aliased(Document)
+        # Guard: both flags at once is ambiguous
+        if only_folders and files_only:
+            files_only = False  # or raise ValueError("only_folders and files_only are mutually exclusive")
 
         base = (
             select(Document)
@@ -348,35 +359,90 @@ class MetadataRepository(BaseRepository[Document]):
             .where(Document.department_id == owner.department_id)
             .where(Document.status != DocStatus.deleted)
         )
-        if parent_id is None:
-            base = base.where(Document.parent_id.is_(None))
-        else:
-            base = base.where(Document.parent_id == parent_id)
 
-        # Correct recursive join: join against the CTE, not just alias
-        recursive_q = (
-            select(Document)
-            .join(doc_alias, Document.parent_id == doc_alias.id)
+        # Kind filter
+        if only_folders:
+            base = base.where(Document.file_type == "folder")
+        elif files_only:
+            # adapt to your model: either `is_folder = False` or file_type != "folder"
+            base = base.where(Document.file_type != "folder")
+
+        if not recursive:
+            # Current level only
+            if parent_id is None:
+                base = base.where(Document.parent_id.is_(None))
+            else:
+                base = base.where(Document.parent_id == parent_id)
+
+            # Count first
+            count_stmt = base.with_only_columns(func.count()).order_by(None)
+            total_count = (await self.session.execute(count_stmt)).scalar_one()
+
+            # Page
+            stmt = base.offset(offset).limit(limit)
+            docs = (await self.session.execute(stmt)).scalars().all()
+
+            return {
+                "documents": [DocumentMetadataRead.model_validate(doc, from_attributes=True) for doc in docs],
+                "total_count": int(total_count),
+            }
+
+        # Recursive branch
+        parent_filter = (
+            Document.parent_id.is_(None) if parent_id is None else Document.parent_id == parent_id
         )
 
+        # re-apply base with same filters (tenant/department/status + kind + parent)
+        base = (
+            select(Document)
+            .where(Document.tenant_id == owner.tenant_id)
+            .where(Document.department_id == owner.department_id)
+            .where(Document.status != DocStatus.deleted)
+            .where(parent_filter)
+        )
+        if only_folders:
+            base = base.where(Document.file_type == "folder")
+        elif files_only:
+            base = base.where(Document.file_type != "folder")
+
+        doc_alias = aliased(Document)
+        recursive_q = select(Document).join(doc_alias, Document.parent_id == doc_alias.id)
         cte = base.union_all(recursive_q).cte(name="recursive_docs", recursive=True)
 
-        # Join CTE back to Document to get full rows
-        stmt = (
+        rows_stmt = (
             select(Document)
             .join(cte, Document.id == cte.c.id)
             .offset(offset)
             .limit(limit)
         )
-        result = await self.session.execute(stmt)
-        docs = result.scalars().all()
+
+        count_from = (
+            select(Document)
+            .join(cte, Document.id == cte.c.id)
+            .order_by(None)
+            .subquery()
+        )
+        count_stmt = select(func.count()).select_from(count_from)
+        total = (await self.session.execute(count_stmt)).scalar_one()
+
+        docs = (await self.session.execute(rows_stmt)).scalars().all()
 
         return {
-            "documents": [DocumentMetadataRead.from_orm(doc) for doc in docs],
-            "count": len(docs),
+            "documents": [DocumentMetadataRead.model_validate(doc, from_attributes=True) for doc in docs],
+            "total_count": int(total),
         }
 
-    
+
+    async def list_folders(self, owner: TokenData):
+        q = (
+            select(self.doc_cls.id, self.doc_cls.name, self.doc_cls.parent_id)
+            .where(self.doc_cls.is_folder.is_(True))
+            # add tenant / ACL filters here as you do elsewhere
+            .order_by(self.doc_cls.parent_id.nullsfirst(), self.doc_cls.name)
+        )
+        rows = (await self.session.execute(q)).all()
+        return {"folders": [{"id": r[0], "name": r[1], "parent_id": r[2]} for r in rows]}
+
 
     async def get(
         self, document: Union[str, UUID], owner: TokenData
@@ -686,24 +752,49 @@ class MetadataRepository(BaseRepository[Document]):
         tenant_id,
         user_id,
         department_id,
-        base_parent_id: int | None = None,   # NEW
+        base_parent_id: int | None = None,
+        user: TokenData | None = None,              # optional (for convenience)
     ) -> dict[str, int]:
-        folder_paths = [PurePosixPath(p).as_posix() for p in folder_paths]
-        existing = await self.get_existing_folders(folder_paths, tenant_id)
-        sorted_paths = sorted(folder_paths)
-        path_to_id = {f.file_path: f.id for f in existing}
+        # Normalize to posix
+        folder_paths = [PurePosixPath(p).as_posix().strip("/") for p in folder_paths]
 
-        for path in sorted_paths:
-            if path in path_to_id:
+        # Load base parent and compute its prefix path
+        base_parent: Document | None = None
+        base_prefix = ""
+        if base_parent_id:
+            base_parent = await self.session.get(Document, base_parent_id)
+            if not base_parent or base_parent.file_type != "folder":
+                raise HTTPException(status_code=404, detail="Target folder not found")
+            base_prefix = (base_parent.file_path or base_parent.name or "").strip("/")
+
+        # Compose final absolute-like paths to store in DB
+        # Example: base_prefix="PepsiCO/4. Procurement", rel="A/B"
+        # final_path="PepsiCO/4. Procurement/A/B"
+        final_paths = [
+            _join_posix(base_prefix, p) if base_prefix else p
+            for p in folder_paths
+        ]
+
+        # Preload existing
+        existing = await self.get_existing_folders(final_paths, tenant_id)
+        path_to_id: dict[str, int] = {f.file_path: f.id for f in existing}
+
+        # Create in topological order
+        for rel_path in sorted(folder_paths):
+            final_path = _join_posix(base_prefix, rel_path) if base_prefix else rel_path
+            if final_path in path_to_id:
                 continue
-            parent_path = "/".join(path.split("/")[:-1]) if "/" in path else None
-            # if there's no parent_path, hang it under base_parent_id (the opened folder)
-            parent_id = path_to_id.get(parent_path) if parent_path else base_parent_id
+
+            parent_rel = "/".join(rel_path.split("/")[:-1]) if "/" in rel_path else None
+            parent_final = _join_posix(base_prefix, parent_rel) if parent_rel else base_prefix or None
+            parent_id = path_to_id.get(parent_final) if parent_final else (base_parent_id or None)
+
+            name = rel_path.split("/")[-1]
 
             folder = Document(
-                name=path.split("/")[-1],
-                title=path.split("/")[-1],
-                file_type="folder",                 # ensure consistency
+                name=name,
+                title=name,
+                file_type="folder",
                 parent_id=parent_id,
                 tenant_id=tenant_id,
                 department_id=department_id,
@@ -711,13 +802,15 @@ class MetadataRepository(BaseRepository[Document]):
                 status=DocStatus.private,
                 is_archived=False,
                 is_favourited=False,
-                file_path=path,
+                file_path=final_path,  # ← IMPORTANT
                 created_at=datetime.now(timezone.utc),
             )
             self.session.add(folder)
             await self.session.flush()
-            path_to_id[path] = folder.id
+            path_to_id[final_path] = folder.id
+
         return path_to_id
+
 
 
     # documents_metadata.py

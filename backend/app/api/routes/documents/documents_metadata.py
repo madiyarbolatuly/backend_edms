@@ -64,7 +64,6 @@ async def upload_document_metadata(
 
 
 
-
 @router.get(
     "",
     response_model=Dict[str, Union[List[DocumentMetadataRead], int]],
@@ -72,14 +71,35 @@ async def upload_document_metadata(
     name="get_documents_metadata",
 )
 async def get_documents_metadata(
-    limit: int = Query(default=5000, lt=5000, ge=1),
+    limit: int = Query(default=100, le=5000, ge=1),   # ← было lt=5000, стало le=5000 и default=100
     offset: int = Query(default=0, ge=0),
-    parent_id: Optional[UUID] = Query(default=None, description="Folder id; null = root"),
+    parent_id: Optional[int] = Query(default=None, description="Folder id; null = root"),
     recursive: bool = Query(default=False),
     repository: MetadataRepository = Depends(get_repository(MetadataRepository)),
     user: TokenData = Depends(get_current_user),
+    only_folders: bool = Query(default=False),   # keep for the tree calls
+    files_only: bool = Query(default=False),
+
+
 ) -> Dict[str, Union[List[DocumentMetadataRead], int]]:
-    return await repository.doc_list(owner=user, parent_id=parent_id, recursive=recursive, limit=limit, offset=offset)
+    return await repository.doc_list(
+        owner=user, parent_id=parent_id, recursive=recursive, limit=limit, offset=offset, files_only=files_only,        only_folders=only_folders,
+          # <— pass through
+
+    )
+
+
+@router.get(
+    "/folders",
+    status_code=200,
+    name="list_folders_only",
+)
+async def list_folders_only(
+    repository: MetadataRepository = Depends(get_repository(MetadataRepository)),
+    user: TokenData = Depends(get_current_user),
+):
+    # returns [{id, name, parent_id}, ...]
+    return await repository.list_folders(owner=user)
 
 
 @router.get(

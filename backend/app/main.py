@@ -30,20 +30,6 @@ app = FastAPI(
     swagger_ui_parameters={"persistAuthorization": True},  # ← запоминаем JWT
 )
 
-# --- DEV-режим без JWT ----------------------------------
-def _dev_stub_user() -> TokenData:
-    return TokenData(
-        id="01DEVUSERXXXXXXXXXXXXX",
-        username="admin",
-        role="admin",
-        tenant_id=1,
-        department_id=1,
-    )
-
-if settings.debug:                # DEBUG=True в .env
-    app.dependency_overrides[get_current_user] = _dev_stub_user
-# --------------------------------------------------------
-
 app.add_middleware(
     CORSMiddleware, 
     allow_origins=["http://localhost:5173", "http://localhost:3000", "http://localhost:8080", "http://localhost:8081", "http://127.0.0.1:8000"],
