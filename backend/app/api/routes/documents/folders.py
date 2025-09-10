@@ -19,6 +19,7 @@ async def create_folder(
         parent = await repo.get(document=data.parent_id, owner=user)
         if not parent or getattr(parent, "file_type", getattr(parent, "type", None)) != "folder":
             raise HTTPException(status_code=400, detail="Parent must be a folder.")
+            
     return await repo.create_folder(
         owner_id=user.id,
         tenant_id=user.tenant_id,

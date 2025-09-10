@@ -5,7 +5,6 @@ from fastapi.responses import FileResponse
 from fastapi.openapi.utils import get_openapi
 from contextlib import asynccontextmanager
 import pathlib
-         # needed for download stub
 from app.api.routes.onlyoffice import router as onlyoffice_router  # import ONLYOFFICE router
 import os 
 from app.api.router import router
@@ -57,7 +56,7 @@ if frontend_build.exists():
         StaticFiles(directory=str(frontend_build), html=True),
         name="frontend",
         title=settings.title,
-    )  # :contentReference[oaicite:7]{index=7}
+    )
 
 FAVICON_PATH = "favicon.ico"
 @app.get(FAVICON_PATH, include_in_schema=False)

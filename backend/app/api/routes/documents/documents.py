@@ -15,7 +15,7 @@ from app.schemas.auth.bands import TokenData
 from app.schemas.documents.documents_metadata import DocumentMetadataRead
 from app.schemas.documents.document_sharing import SharingRequest
 from fastapi import (
-    APIRouter, Depends, File, HTTPException, UploadFile, status, Query
+    APIRouter, Depends, File, HTTPException, UploadFile, status
 )
 from app.db.tables.documents.documents import Document
 from pathlib import PurePosixPath
@@ -189,7 +189,6 @@ async def upload_folder_bulk(
             pass
         raise HTTPException(status_code=500, detail=f"Ошибка при создании папок: {e}")
 
-    # 3) Stream files and upsert metadata
     results: list = []
     try:
         for file in files:
@@ -236,6 +235,7 @@ async def upload_documents(
     files: List[UploadFile] = File(...),
     folder: Optional[str] = None,
     preserve_structure: bool = False,
+    parent_id: Optional[int] = None,
     user: TokenData = Depends(get_current_user),
     repo: MetadataRepository = Depends(get_repository(MetadataRepository))
 ):
@@ -243,7 +243,7 @@ async def upload_documents(
     Upload files with optional folder structure preservation
     """
     if preserve_structure:
-        return await upload_folder_bulk(files, user, repo)
+        return await upload_folder_bulk(files,parent_id, user, repo)
     else:
         # Handle single folder upload (existing logic)
         results = []
@@ -257,6 +257,7 @@ async def upload_documents(
                 folder=folder_norm,
                 filename=filename,
                 user=user,
+                parent_id=parent_id,
                 parent_map={},  # Empty map for single file upload
                 base_parent_id=parent_id
             )

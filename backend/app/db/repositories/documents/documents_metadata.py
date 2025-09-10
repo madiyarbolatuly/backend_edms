@@ -32,7 +32,6 @@ from app.db.models import logger
 from sqlalchemy.orm import aliased
 from sqlalchemy import select, update, insert, delete, func
 from pathlib import PurePosixPath, Path
-from inspect import iscoroutine
 
 async def _join_posix(a: str | None, b: str | None) -> str:
         """
@@ -162,7 +161,6 @@ class MetadataRepository(BaseRepository[Document]):
         filename: str,
         file_path: str,
         file_hash: str,
-        file_size: int,
         user: TokenData,
         existing: Optional[Document],
         parent_id: Optional[int] = None,
@@ -262,21 +260,11 @@ class MetadataRepository(BaseRepository[Document]):
    
 
 
-    async def _stream_and_hash(self, file, user, folder: str | None, filename: str):
-        if iscoroutine(filename):
-            filename = await filename
-        if iscoroutine(folder):
-            folder = await folder
-
-        filename = str(filename)
-        if folder is not None:
-            folder = PurePosixPath(str(folder)).as_posix()
-
+    async def _stream_and_hash(self, file: UploadFile, *, rel_file_path: str, user: TokenData):
         upload_root = Path(settings.upload_dir)
         base_dir = upload_root / str(user.tenant_id) / str(user.department_id)
 
-        relative_path = (Path(folder) / filename) if folder else Path(filename)
-        file_path = base_dir / relative_path
+        file_path = base_dir / rel_file_path
         file_path.parent.mkdir(parents=True, exist_ok=True)
 
         sha256 = hashlib.sha256()
@@ -292,6 +280,9 @@ class MetadataRepository(BaseRepository[Document]):
         await file.seek(0)
 
         return sha256.hexdigest(), total_size, str(file_path.relative_to(upload_root))
+
+
+
 
 
 
@@ -418,7 +409,20 @@ class MetadataRepository(BaseRepository[Document]):
             base = base.where(Document.file_type != "folder")
 
         doc_alias = aliased(Document)
-        recursive_q = select(Document).join(doc_alias, Document.parent_id == doc_alias.id)
+
+        recursive_q = (
+            select(Document)
+            .join(doc_alias, Document.parent_id == doc_alias.id)
+            .where(Document.tenant_id == owner.tenant_id)
+            .where(Document.department_id == owner.department_id)
+            .where(Document.status != DocStatus.deleted)
+        )
+
+        if only_folders:
+            recursive_q = recursive_q.where(Document.file_type == "folder")
+        elif files_only:
+            recursive_q = recursive_q.where(Document.file_type != "folder")
+
         cte = base.union_all(recursive_q).cte(name="recursive_docs", recursive=True)
 
         rows_stmt = (
@@ -766,7 +770,6 @@ class MetadataRepository(BaseRepository[Document]):
         # Normalize to posix
         folder_paths = [PurePosixPath(p).as_posix().strip("/") for p in folder_paths]
 
-        # Load base parent and compute its prefix path
         base_parent: Document | None = None
         base_prefix = ""
         if base_parent_id:
@@ -775,13 +778,9 @@ class MetadataRepository(BaseRepository[Document]):
                 raise HTTPException(status_code=404, detail="Target folder not found")
             base_prefix = (base_parent.file_path or base_parent.name or "").strip("/")
 
-        # Compose final absolute-like paths to store in DB
-        # Example: base_prefix="PepsiCO/4. Procurement", rel="A/B"
-        # final_path="PepsiCO/4. Procurement/A/B"
-        final_paths = [
-            _join_posix(base_prefix, p) if base_prefix else p
-            for p in folder_paths
-        ]
+        final_paths: list[str] = []
+        for p in folder_paths:
+            final_paths.append(await _join_posix(base_prefix, p) if base_prefix else p)
 
         # Preload existing
         existing = await self.get_existing_folders(final_paths, tenant_id)
@@ -789,14 +788,17 @@ class MetadataRepository(BaseRepository[Document]):
 
         # Create in topological order
         for rel_path in sorted(folder_paths):
-            final_path = _join_posix(base_prefix, rel_path) if base_prefix else rel_path
+            final_path = await _join_posix(base_prefix, rel_path) if base_prefix else rel_path
             if final_path in path_to_id:
                 continue
 
             parent_rel = "/".join(rel_path.split("/")[:-1]) if "/" in rel_path else None
-            parent_final = _join_posix(base_prefix, parent_rel) if parent_rel else base_prefix or None
-            parent_id = path_to_id.get(parent_final) if parent_final else (base_parent_id or None)
-
+            parent_final = await _join_posix(base_prefix, parent_rel) if parent_rel else base_prefix or None
+            
+            if not parent_rel and base_parent_id:
+                parent_id = base_parent_id
+            else:
+                parent_id = path_to_id.get(parent_final)
             name = rel_path.split("/")[-1]
 
             folder = Document(
@@ -841,11 +843,11 @@ class MetadataRepository(BaseRepository[Document]):
         folder = PurePosixPath(folder or "").as_posix().strip("/")
 
         # Compute the FINAL logical folder path we will store in DB
-        final_folder_path = _join_posix(base_prefix, folder) if folder else base_prefix
+        final_folder_path = await _join_posix(base_prefix, folder) if folder else base_prefix
 
         # Full logical path (what you keep in DB `file_path`)
         rel_file_path = (
-            _join_posix(final_folder_path, filename) if final_folder_path else filename
+            await _join_posix(final_folder_path, filename) if final_folder_path else filename
         )
 
         # Stream bytes to that exact location on disk
@@ -866,9 +868,8 @@ class MetadataRepository(BaseRepository[Document]):
         document = await self._create_or_update_document(
             file=file,
             filename=filename,
-            file_path=stored_rel_path,  # what _stream_and_hash returned (relative to upload_root)
+            file_path=stored_rel_path, 
             file_hash=file_hash,
-            file_size=file_size,
             user=user,
             existing=existing,
             parent_id=parent_id,
