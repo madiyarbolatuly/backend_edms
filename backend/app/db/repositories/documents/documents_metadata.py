@@ -32,15 +32,9 @@ from app.db.models import logger
 from sqlalchemy.orm import aliased
 from sqlalchemy import select, update, insert, delete, func
 from pathlib import PurePosixPath, Path
+from inspect import iscoroutine
 
-class MetadataRepository(BaseRepository[Document]):
-
-    def __init__(self, session: AsyncSession) -> None:
-        self.session = session
-        self.doc_cls = aliased(Document, name="doc_cls")
-
-
-    def _join_posix(a: str | None, b: str | None) -> str:
+async def _join_posix(a: str | None, b: str | None) -> str:
         """
         Join 2 posix segments without duplicate slashes.
         If a is falsy, returns b. If b is falsy, returns a. 
@@ -53,7 +47,7 @@ class MetadataRepository(BaseRepository[Document]):
             return a
         return f"{a}/{b}"
 
-    async def _get_base_parent(self, base_parent_id: int | None, user: TokenData) -> Document | None:
+async def _get_base_parent(self, base_parent_id: int | None, user: TokenData) -> Document | None:
         if base_parent_id is None:
             return None
         q = (
@@ -65,6 +59,15 @@ class MetadataRepository(BaseRepository[Document]):
             .where(Document.file_type == "folder")
         )
         return (await self.session.execute(q)).scalars().first()
+
+class MetadataRepository(BaseRepository[Document]):
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+        self.doc_cls = aliased(Document, name="doc_cls")
+
+
+    
 
     async def _get_instance(self, document: Union[str, UUID], owner: TokenData):
         try:
@@ -258,15 +261,24 @@ class MetadataRepository(BaseRepository[Document]):
 
    
 
-    async def _stream_and_hash(self, file: UploadFile, user: TokenData, folder: Optional[str], filename: str):
+
+    async def _stream_and_hash(self, file, user, folder: str | None, filename: str):
+        if iscoroutine(filename):
+            filename = await filename
+        if iscoroutine(folder):
+            folder = await folder
+
+        filename = str(filename)
+        if folder is not None:
+            folder = PurePosixPath(str(folder)).as_posix()
+
         upload_root = Path(settings.upload_dir)
         base_dir = upload_root / str(user.tenant_id) / str(user.department_id)
 
-        # ✅ include folder if present
         relative_path = (Path(folder) / filename) if folder else Path(filename)
         file_path = base_dir / relative_path
-
         file_path.parent.mkdir(parents=True, exist_ok=True)
+
         sha256 = hashlib.sha256()
         total_size = 0
         with file_path.open("wb") as f:
@@ -740,10 +752,6 @@ class MetadataRepository(BaseRepository[Document]):
         result = await self.session.execute(stmt)
         return result.scalars().all()
 
-    
-
-        
-    # documents_metadata.py
 
     async def bulk_create_folders(
         self,
@@ -819,19 +827,37 @@ class MetadataRepository(BaseRepository[Document]):
         self,
         *,
         file: UploadFile,
-        folder: str | None,
+        folder: str | None,            # relative path from the browser (webkitRelativePath's folder part)
         filename: str,
         user: TokenData,
-        parent_map: dict[str, int],
-        base_parent_id: int | None = None,   # NEW
+        parent_map: dict[str, int],    # maps FINAL folder paths to IDs (from bulk_create_folders)
+        base_parent_id: int | None = None,
     ):
-        file_hash, file_size, file_path = await self._stream_and_hash(file, user, folder, filename)
+        # Load base parent to get its prefix path
+        base_parent = await _get_base_parent(self, base_parent_id, user)
+        base_prefix = (base_parent.file_path or base_parent.name or "").strip("/") if base_parent else ""
 
-        if folder is not None:
-            folder = PurePosixPath(folder).as_posix()
+        # Normalize incoming folder
+        folder = PurePosixPath(folder or "").as_posix().strip("/")
 
-        # if no folder (top level), fall back to the opened folder id
-        parent_id = parent_map.get(folder) if folder else base_parent_id
+        # Compute the FINAL logical folder path we will store in DB
+        final_folder_path = _join_posix(base_prefix, folder) if folder else base_prefix
+
+        # Full logical path (what you keep in DB `file_path`)
+        rel_file_path = (
+            _join_posix(final_folder_path, filename) if final_folder_path else filename
+        )
+
+        # Stream bytes to that exact location on disk
+        file_hash, file_size, stored_rel_path = await self._stream_and_hash(
+            file, rel_file_path=rel_file_path, user=user
+        )
+
+        # Lookup parent_id by FINAL folder path (empty means root OR selected base parent)
+        if final_folder_path:
+            parent_id = parent_map.get(final_folder_path)
+        else:
+            parent_id = base_parent_id  # put file directly under the selected folder if present
 
         existing = await self._find_existing(filename, user, parent_id)
         if existing and existing.file_hash == file_hash:
@@ -840,7 +866,7 @@ class MetadataRepository(BaseRepository[Document]):
         document = await self._create_or_update_document(
             file=file,
             filename=filename,
-            file_path=file_path,
+            file_path=stored_rel_path,  # what _stream_and_hash returned (relative to upload_root)
             file_hash=file_hash,
             file_size=file_size,
             user=user,
