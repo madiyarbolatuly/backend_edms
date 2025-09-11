@@ -93,9 +93,8 @@ class MetadataRepository(BaseRepository[Document]):
                     .where(self.doc_cls.deleted_at.is_(None))
                 )
             except ValueError:
-                # If not a valid UUID either, search by name (with URL decoding)
                 from urllib.parse import unquote
-                decoded_name = unquote(document)  # Decode URL-encoded filename
+                decoded_name = unquote(document)  
                 
                 stmt = (
                     select(self.doc_cls)
