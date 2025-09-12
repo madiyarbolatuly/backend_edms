@@ -209,7 +209,7 @@ async def delete_document_metadata(
     except Exception as e:
         raise http_404(msg=f"No document with the detail: {document}.") from e
 
-    return await repository.delete(document=document, owner=user)
+    return await repository.delete(document, owner=user)
 
 
 # Archiving

@@ -32,6 +32,12 @@ class FolderCreate(BaseSchema):
     name: str = Field(..., description="Folder name")
     parent_id: Optional[int] = Field(None, description="Parent folder ID")
 
+class DocumentMetadataPatch(BaseSchema):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    tags: Optional[List[str]] = None
+    categories: Optional[List[str]] = None
+    parent_id: Optional[int] = None
 
 class FolderRead(BaseSchema):
     id: UUID

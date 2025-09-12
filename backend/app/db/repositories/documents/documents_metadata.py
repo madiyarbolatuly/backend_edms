@@ -153,6 +153,7 @@ class MetadataRepository(BaseRepository[Document]):
             stmt = stmt.where(Document.parent_id == parent_id)
         result = await self.session.execute(stmt)
         return result.scalars().first()
+    
     async def _create_or_update_document(
         self,
         *,
@@ -667,8 +668,6 @@ class MetadataRepository(BaseRepository[Document]):
         await self.session.refresh(folder)
         return folder
 
-  
-
     async def archive_document(self, document_id: UUID):
         stmt = update(Document).where(Document.id == document_id).values(is_archived=True)
         await self.session.execute(stmt)
@@ -770,12 +769,14 @@ class MetadataRepository(BaseRepository[Document]):
         folder_paths = [PurePosixPath(p).as_posix().strip("/") for p in folder_paths]
 
         base_parent: Document | None = None
+        base_parent: Document | None = None
         base_prefix = ""
-        if base_parent_id:
+        if base_parent_id is not None:   # ← строго проверяем на None
             base_parent = await self.session.get(Document, base_parent_id)
             if not base_parent or base_parent.file_type != "folder":
                 raise HTTPException(status_code=404, detail="Target folder not found")
             base_prefix = (base_parent.file_path or base_parent.name or "").strip("/")
+
 
         final_paths: list[str] = []
         for p in folder_paths:
@@ -787,6 +788,9 @@ class MetadataRepository(BaseRepository[Document]):
 
         # Create in topological order
         for rel_path in sorted(folder_paths):
+            rel_path = rel_path.strip().lstrip("./").strip("/")
+            if not rel_path or rel_path == ".":
+                continue
             final_path = await _join_posix(base_prefix, rel_path) if base_prefix else rel_path
             if final_path in path_to_id:
                 continue
@@ -799,6 +803,9 @@ class MetadataRepository(BaseRepository[Document]):
             else:
                 parent_id = path_to_id.get(parent_final)
             name = rel_path.split("/")[-1]
+            if not name or name == ".":
+                continue
+
 
             folder = Document(
                 name=name,
@@ -820,45 +827,70 @@ class MetadataRepository(BaseRepository[Document]):
 
         return path_to_id
 
-
-
-    # documents_metadata.py
-
     async def upload_with_streaming(
         self,
         *,
         file: UploadFile,
-        folder: str | None,            # relative path from the browser (webkitRelativePath's folder part)
+        folder: str | None,            # relative path (webkitRelativePath)
         filename: str,
         user: TokenData,
-        parent_map: dict[str, int],    # maps FINAL folder paths to IDs (from bulk_create_folders)
+        parent_map: dict[str, int],
         base_parent_id: int | None = None,
     ):
-        # Load base parent to get its prefix path
         base_parent = await _get_base_parent(self, base_parent_id, user)
         base_prefix = (base_parent.file_path or base_parent.name or "").strip("/") if base_parent else ""
 
-        # Normalize incoming folder
+        # Нормализуем относительный путь
         folder = PurePosixPath(folder or "").as_posix().strip("/")
+        if not folder or folder == ".":
+            folder = None
 
-        # Compute the FINAL logical folder path we will store in DB
-        final_folder_path = await _join_posix(base_prefix, folder) if folder else base_prefix
+        # Если folder пустой → значит грузим прямо в выбранную папку (base_parent)
+        if folder is None:
+            final_folder_path = None
+            parent_id = base_parent_id
+        else:
+            # Есть подпапка → вычисляем полный путь
+            final_folder_path = await _join_posix(base_prefix, folder) if base_prefix else folder
+            parent_id = parent_map.get(final_folder_path)
 
-        # Full logical path (what you keep in DB `file_path`)
+            # Если подпапки нет в parent_map → создать её на лету
+            if parent_id is None:
+                folder_name = final_folder_path.split("/")[-1]
+                parent_rel = "/".join(final_folder_path.split("/")[:-1]) or None
+                parent_parent_id = parent_map.get(parent_rel) if parent_rel else base_parent_id
+
+                new_folder = Document(
+                    name=folder_name,
+                    title=folder_name,
+                    tenant_id=user.tenant_id,
+                    department_id=user.department_id,
+                    owner_id=user.id,
+                    file_type="folder",
+                    file_path=final_folder_path,
+                    parent_id=parent_parent_id,
+                    status=DocStatus.private,
+                    created_at=datetime.now(timezone.utc),
+                    is_archived=False,
+                    is_favourited=False,
+                )
+                self.session.add(new_folder)
+                await self.session.flush()
+                parent_id = new_folder.id
+                parent_map[final_folder_path] = parent_id
+
+        # Формируем путь для файла
         rel_file_path = (
-            await _join_posix(final_folder_path, filename) if final_folder_path else filename
+            await _join_posix(base_prefix, filename) if folder is None else await _join_posix(final_folder_path, filename)
         )
 
-        # Stream bytes to that exact location on disk
+        # Сохраняем файл
         file_hash, file_size, stored_rel_path = await self._stream_and_hash(
             file, rel_file_path=rel_file_path, user=user
         )
 
-        # Lookup parent_id by FINAL folder path (empty means root OR selected base parent)
-        if final_folder_path:
-            parent_id = parent_map.get(final_folder_path)
-        else:
-            parent_id = base_parent_id  # put file directly under the selected folder if present
+        logger.info("upload_with_streaming: base_prefix=%s, folder=%s, final_folder_path=%s, parent_id=%s",
+                    base_prefix, folder, final_folder_path, parent_id)
 
         existing = await self._find_existing(filename, user, parent_id)
         if existing and existing.file_hash == file_hash:
@@ -867,7 +899,7 @@ class MetadataRepository(BaseRepository[Document]):
         document = await self._create_or_update_document(
             file=file,
             filename=filename,
-            file_path=stored_rel_path, 
+            file_path=stored_rel_path,
             file_hash=file_hash,
             user=user,
             existing=existing,

@@ -258,7 +258,6 @@ async def upload_documents(
                 filename=filename,
                 user=user,
                 parent_id=parent_id,
-                parent_map={},  # Empty map for single file upload
                 base_parent_id=parent_id
             )
             results.append(result)
