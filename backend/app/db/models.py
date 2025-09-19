@@ -6,11 +6,13 @@ from sqlalchemy.orm import sessionmaker, Session
 from app.db.base import Base
 from app.core.config import settings
 from app.core.exceptions import http_500
-logger = logging.getLogger("sqlalchemy")
 from app.db.tables.auth.auth import User                     # noqa: F401
 from app.db.tables.documents.documents import Document  # noqa: F401
 from app.db.tables.documents.documents import Document  # noqa: F401
 from app.db.tables.departments import Department
+from app.db.tables.documents.documents import Document
+
+logger = logging.getLogger("sqlalchemy")
 
 engine = create_engine(
     url=settings.sync_database_url,
@@ -48,6 +50,5 @@ async def check_tables():
         raise http_500(msg="An error occurred while creating tables.") from e
 
     # Update the document list query to exclude archived documents
-    from app.db.tables.documents.documents import Document
 
     stmt = select(Document).where(Document.is_archived == False)

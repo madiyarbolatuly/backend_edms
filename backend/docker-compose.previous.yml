@@ -1,0 +1,19 @@
+services:
+  api-previous:
+    build:
+      context: . # Adjust this path to your previous backend codebase if it's in a different directory
+    ports:
+      - "8080:8000"
+    env_file: app/.env # Ensure this .env file is correct for the previous version
+    volumes:
+      - ./uploads_previous:/usr/src/app/uploads # Use a different volume for uploads if necessary
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+  postgres-previous:
+    image: postgres
+    env_file: app/.env
+    volumes:
+      - postgres-db-previous:/var/lib/postgresql/data
+      - ./migrations:/usr/src/app/migrations # Adjust this path if migrations are different for previous version
+
+volumes:
+  postgres-db-previous:

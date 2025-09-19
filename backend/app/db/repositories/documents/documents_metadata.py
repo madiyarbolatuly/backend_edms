@@ -30,8 +30,10 @@ from enum import Enum
 from app.core.config import settings
 from app.db.models import logger
 from sqlalchemy.orm import aliased
-from sqlalchemy import select, update, insert, delete, func
+from sqlalchemy import select, update, insert, delete, func, and_
 from pathlib import PurePosixPath, Path
+import os, shutil
+from app.api.dependencies.repositories import get_file_path
 
 async def _join_posix(a: str | None, b: str | None) -> str:
         """
@@ -153,6 +155,65 @@ class MetadataRepository(BaseRepository[Document]):
             stmt = stmt.where(Document.parent_id == parent_id)
         result = await self.session.execute(stmt)
         return result.scalars().first()
+        
+    
+
+    async def move_document(self, document_id: int, new_parent_id: Optional[int], user: TokenData):
+        doc = await self.session.get(Document, document_id)
+        if not doc:
+            raise Exception("Документ не найден")
+        if doc.owner_id != user.id and user.role != "admin":
+            raise Exception("Нет прав")
+
+        # 1. Получаем новый путь родителя
+        if new_parent_id:
+            parent = await self.session.get(Document, new_parent_id)
+            if not parent:
+                raise Exception("Целевая папка не найдена")
+            new_base_path = f"{parent.file_path}/{doc.name}" if parent.file_path else doc.name
+        else:
+            # перемещение в корень
+            new_base_path = doc.name
+
+        old_base_path = doc.file_path
+
+        # 2. Обновляем путь у самого документа
+        doc.parent_id = new_parent_id
+        doc.file_path = new_base_path
+
+        # 3. Обновляем все дочерние документы (рекурсивно по file_path)
+        children = (
+            await self.session.execute(
+                select(Document).where(
+                    Document.tenant_id == user.tenant_id,
+                    Document.department_id == user.department_id,
+                    Document.file_path.like(f"{old_base_path}/%")
+                )
+            )
+        ).scalars().all()
+
+
+        for child in children:
+            child.file_path = child.file_path.replace(old_base_path, new_base_path, 1)
+
+        # 4. Перемещаем файлы на диске (если есть)
+        try:
+            old_abs_path = await get_file_path(old_base_path)
+            new_abs_path = await get_file_path(new_base_path)
+            os.makedirs(os.path.dirname(new_abs_path), exist_ok=True)
+            shutil.move(old_abs_path, new_abs_path)
+        except FileNotFoundError:
+            pass  # если файла на диске нет, игнорируем
+        except Exception as e:
+            raise Exception(f"Ошибка при перемещении файлов: {e}")
+
+        await self.session.flush()
+        await self.session.commit()
+
+        return doc
+
+
+
     
     async def _create_or_update_document(
         self,
@@ -488,7 +549,7 @@ class MetadataRepository(BaseRepository[Document]):
             await self._execute_update(db_document, changes)
 
         else:
-            # This condition will be activated when, the new version of file is added by a privileged member # here privileged member is one who have access to update the document.
+            # This condition will be activated when, the new version of file is added by a privileged memberment.
             db_document = await self.get_doc(filename=str(document))
             changes = await self._extract_changes(document_patch)
 

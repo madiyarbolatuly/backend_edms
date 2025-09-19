@@ -13,6 +13,7 @@ class DocStatus(str, PyEnum):
     draft     = "draft"
     review    = "review"
     published = "published"
+    
 
 
 class NotifyEnum(str, PyEnum):
