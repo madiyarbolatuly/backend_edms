@@ -71,7 +71,7 @@ async def upload_document_metadata(
     name="get_documents_metadata",
 )
 async def get_documents_metadata(
-    limit: int = Query(default=100, le=5000, ge=1),   # ← было lt=5000, стало le=5000 и default=100
+    limit: int = Query(default=100, le=5800, ge=1),   # ← было lt=5000, стало le=5000 и default=100
     offset: int = Query(default=0, ge=0),
     parent_id: Optional[int] = Query(default=None, description="Folder id; null = root"),
     recursive: bool = Query(default=False),
@@ -295,7 +295,7 @@ async def unarchive_doc(
     return await repo.un_archive(file=file_name, user=user)
 
 
-@router.get("/v2/u/me", tags=["User"])
+@router.get("/u/me", tags=["User"])
 async def read_users_me(
     token: str = Depends(oauth2_scheme),
     session: AsyncSession = Depends(get_async_session),   # ← берём сессию
@@ -353,27 +353,6 @@ async def patch_document_metadata(
         is_owner=True,
     )
 
-
-@router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_document(document_id: UUID, repository: MetadataRepository = Depends(get_repository(MetadataRepository))):
-    if await repository.is_document_archived(document_id):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cannot delete archived document.")
-    # ...existing delete logic...
-
-
-@router.patch("/{document_id}")
-async def edit_document(document_id: UUID, repository: MetadataRepository = Depends(get_repository(MetadataRepository))):
-    if await repository.is_document_archived(document_id):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cannot edit archived document.")
-    # ...existing edit logic...
-
-
-@router.put("/{document_id}/rename")
-async def rename_document(document_id: UUID, repository: MetadataRepository = Depends(get_repository(MetadataRepository))):
-    if await repository.is_document_archived(document_id):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cannot rename archived document.")
-    # ...existing rename logic...
-    
 
 @router.put("/{document_id}/star")
 async def toggle_star(

@@ -277,26 +277,77 @@ class MetadataRepository(BaseRepository[Document]):
         if not doc:
             raise http_404(msg=f"No document with id '{doc_id}' found.")
         return doc
-   # repo
+    async def _list_children_raw(
+        self,
+        root_id: int,
+        tenant_id: int,
+        department_id: int,
+    ) -> list[Document]:
+        doc_alias = aliased(Document)
+
+        # базовый уровень = сам root
+        base = select(Document.id).where(
+            Document.id == root_id,
+            Document.tenant_id == tenant_id,
+            Document.department_id == department_id,
+        )
+
+        recursive = (
+            select(Document.id)
+            .join(doc_alias, Document.parent_id == doc_alias.id)
+            .where(Document.tenant_id == tenant_id)
+            .where(Document.department_id == department_id)
+        )
+
+        cte = base.union_all(recursive).cte(name="tree", recursive=True)
+
+        result = await self.session.execute(
+            select(Document).join(cte, Document.id == cte.c.id)
+        )
+        return result.scalars().all()
+    
+
+
+    async def _list_descendants_raw(self, root: Document) -> list[Document]:
+        tenant_id = root.tenant_id
+        department_id = root.department_id
+        root_id = root.id
+
+        # сид: сам корень (в рамках того же tenant/department)
+        base = select(Document.id).where(
+            Document.id == root_id,
+            Document.tenant_id == tenant_id,
+            Document.department_id == department_id,
+        )
+        cte = base.cte(name="tree", recursive=True)
+
+        # шаг рекурсии — JOIN ИМЕННО НА CTE
+        step = (
+            select(Document.id)
+            .select_from(Document)
+            .join(cte, Document.parent_id == cte.c.id)
+            .where(
+                Document.tenant_id == tenant_id,
+                Document.department_id == department_id,
+            )
+        )
+        cte = cte.union_all(step)
+
+        # вернём ORM-объекты без корня
+        result = await self.session.execute(
+            select(Document)
+            .join(cte, Document.id == cte.c.id)
+            .where(Document.id != root_id)
+        )
+        return result.scalars().all()
+
+    # Публичный метод (Pydantic схемы)
+    # ───────────────────────────────
     async def list_children(
         self, owner_id: str, parent_id: Optional[int] = None, recursive: bool = False
-    ) -> List[DocumentMetadataRead]:
-        if not recursive:
-            q = await self.session.execute(
-                select(Document)
-                .where(Document.owner_id == owner_id)
-                .where(Document.parent_id == parent_id)
-            )
-            return [DocumentMetadataRead.from_orm(r) for r in q.scalars().all()]
-
-        # Recursive CTE
-        doc_alias = aliased(Document)
-        base = select(Document).where(Document.owner_id == owner_id).where(Document.parent_id == parent_id)
-        recursive = select(Document).join(doc_alias, Document.parent_id == doc_alias.id)
-        cte = base.union_all(recursive).cte(name="recursive_children", recursive=True)
-
-        result = await self.session.execute(select(cte))
-        return [DocumentMetadataRead.from_orm(d) for d in result.scalars().all()]
+    ) -> list[DocumentMetadataRead]:
+        docs = await self._list_children_raw(owner_id, parent_id, recursive)
+        return [DocumentMetadataRead.from_orm(d) for d in docs]
 
 
     async def _update_access_and_permission(self, db_document, changes, user_repo):
@@ -557,40 +608,57 @@ class MetadataRepository(BaseRepository[Document]):
                 await self._execute_update(db_document, changes)
 
         return DocumentMetadataRead(**db_document.__dict__)
-
-    async def delete(self, document: Union[str, UUID], owner: TokenData) -> None:
+    async def delete(self, document: Union[str, int, UUID], owner: TokenData) -> None:
         try:
+            # 1) читаем корень в рамках tenant/department (как ты уже сделал в _get_instance)
             db_document = await self._get_instance(document=document, owner=owner)
-
             if db_document is None:
                 raise http_404(msg=f"No document found with identifier: {document}")
 
-            # Set both deleted_at timestamp and status to deleted for consistency
-            db_document.deleted_at = datetime.now(timezone.utc)
-            db_document.status = DocStatus.deleted
-            await self._delete_access(document=db_document)
-            self.session.add(db_document)
-            await self.session.commit()
+            # 2) собираем потомков ТОЛЬКО под тем же tenant/department
+            descendants: list[Document] = []
+            if db_document.file_type == "folder":
+                descendants = await self._list_descendants_raw(db_document)  # см. реализацию ниже
+
+            ids = [db_document.id, *(d.id for d in descendants)]
+            now = datetime.now(timezone.utc)
+
+            # 3) операции без открытия своей транзакции
+            async def _apply():
+                # ВАЖНО: ни здесь, ни в вызываемых функциях не делай commit()/rollback()
+                # чистим доступы/шары/локи bulk-ом, если они есть
+            
+                # мягкое удаление всех узлов одним апдейтом
+                await self.session.execute(
+                    update(Document)
+                    .where(Document.id.in_(ids))
+                    .values(deleted_at=now, status=DocStatus.deleted)
+                )
+
+            # 4) если уже есть транзакция — просто выполняем; если нет — откроем свою
+            if self.session.in_transaction():
+                await _apply()
+            else:
+                async with self.session.begin():
+                    await _apply()
 
         except HTTPException:
-            # Re-raise HTTP exceptions as-is
             raise
         except Exception as e:
-            # Log the actual error for debugging
-            logger.error(f"Error deleting document {document}: {str(e)}")
+            logger.exception("Delete failed for %s", document)  # даст полный стек
             raise http_404(msg=f"Failed to delete document: {document}") from e
 
     async def bin_list(self, owner: TokenData) -> dict:
-        stmt = (
-            select(Document)
-            .where(Document.owner_id == owner.id)
-            .where(Document.tenant_id == owner.tenant_id)
-            .where(Document.department_id == owner.department_id)
-            .where(Document.status == DocStatus.deleted)
-        )
-        result = await self.session.scalars(stmt)
-        docs = [DocumentMetadataRead.from_orm(doc) for doc in result]
-        return {"response": docs, "no_of_docs": len(docs)}
+            stmt = (
+                select(Document)
+                .where(Document.owner_id == owner.id)
+                .where(Document.tenant_id == owner.tenant_id)
+                .where(Document.department_id == owner.department_id)
+                .where(Document.status == DocStatus.deleted)
+            )
+            result = await self.session.scalars(stmt)
+            docs = [DocumentMetadataRead.from_orm(doc) for doc in result]
+            return {"response": docs, "no_of_docs": len(docs)}
 
     async def restore(self, file: str, owner: TokenData) -> DocumentMetadataRead:
 
