@@ -14,4 +14,8 @@ node_modules/
 .dockerignore
 *.log
 *.db
+<<<<<<< Updated upstream
 uploads/
+=======
+
+>>>>>>> Stashed changes
