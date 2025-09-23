@@ -71,7 +71,7 @@ async def upload_document_metadata(
     name="get_documents_metadata",
 )
 async def get_documents_metadata(
-    limit: int = Query(default=100, le=5800, ge=1),   # ← было lt=5000, стало le=5000 и default=100
+    limit: int = Query(default=100, le=100000, ge=1),   
     offset: int = Query(default=0, ge=0),
     parent_id: Optional[int] = Query(default=None, description="Folder id; null = root"),
     recursive: bool = Query(default=False),
@@ -264,7 +264,6 @@ async def list_archived(
         Dict[str, List[str] | int]: A dictionary containing the list of archived documents.
 
     """
-
     return await repo.archive_list(user=user)
 
 
