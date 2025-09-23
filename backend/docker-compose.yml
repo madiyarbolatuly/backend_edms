@@ -18,6 +18,7 @@ services:
     command: python app/scan/scan_and_upload.py
     env_file: app/.env
     restart: "no"
+    profiles: ["manual"]  
     environment:
       POSTGRES_HOST: postgres
       ROOT_SCAN: /usr/src/app/uploads/1/1/Projects-2025
