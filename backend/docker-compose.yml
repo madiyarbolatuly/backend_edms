@@ -1,16 +1,42 @@
+version: "3.9"
+
 services:
   api:
-    depends_on:
-      - postgres
-    ports:
-      - "8000:8000"
+    build: .
+    depends_on: [postgres]
+    ports: ["8000:8000"]
     env_file: app/.env
+    volumes:
+      - ./:/usr/src/app
+      - /home/fanatik/madiyar/final/docedms/backend/uploads/1/1:/usr/src/app/uploads/1/1
+    environment:
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+
+  scanner:
+    build: .
+    command: python app/scan/scan_and_upload.py
+    env_file: app/.env
+    restart: "no"
+    environment:
+      POSTGRES_HOST: postgres
+      ROOT_SCAN: /usr/src/app/uploads/1/1/Projects-2025
+      ROOT_PREFIX: Projects-2025
+      TENANT_ID: "1"
+      DEPARTMENT_ID: "1"
+      OWNER_ID: "c17ba46f-b4b0-473c-ac93-cb10cfed0f7e"
+      HASH_FILES: "false"
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+    volumes:
+      - ./:/usr/src/app
+      - /home/fanatik/madiyar/final/docedms/backend/uploads/1/1:/usr/src/app/uploads/1/1
+
   postgres:
-    image: postgres
+    image: postgres:16
     env_file: app/.env
     volumes:
       - postgres-db:/var/lib/postgresql/data
-      - ./migrations:/usr/src/app/migrations
 
 volumes:
   postgres-db:
