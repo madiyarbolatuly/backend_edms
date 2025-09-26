@@ -34,6 +34,27 @@ from sqlalchemy import select, update, insert, delete, func, and_
 from pathlib import PurePosixPath, Path
 import os, shutil
 from app.api.dependencies.repositories import get_file_path
+from pathlib import Path, PurePosixPath
+import os, shutil
+from fastapi import HTTPException
+import logging
+import os
+import shutil
+from pathlib import Path
+import logging
+logger = logging.getLogger(__name__)
+
+
+UPLOADS_ROOT = Path("/home/madiyar/Desktop/docedms/backend/uploads") 
+# helper: построить абсолютный путь БЕЗ проверки существования
+def build_abs_path(storage_root: str, rel_path: str) -> Path:
+    # rel_path всегда posix-путь
+    return Path(storage_root) / rel_path
+
+def with_prefix(user, rel: str | None) -> str:
+    rel = (rel or "").strip("/")
+    prefix = f"{user.tenant_id}/{user.department_id}"
+    return f"{prefix}/{rel}" if rel else prefix
 
 async def _join_posix(a: str | None, b: str | None) -> str:
         """
@@ -156,63 +177,64 @@ class MetadataRepository(BaseRepository[Document]):
         result = await self.session.execute(stmt)
         return result.scalars().first()
         
-    
-
-    async def move_document(self, document_id: int, new_parent_id: Optional[int], user: TokenData):
+        
+    async def move_document(self, document_id: int, new_parent_id: int | None, user: TokenData):
         doc = await self.session.get(Document, document_id)
         if not doc:
-            raise Exception("Документ не найден")
-        if doc.owner_id != user.id and user.role != "admin":
-            raise Exception("Нет прав")
+            raise ValueError("Документ не найден")
 
-        # 1. Получаем новый путь родителя
+        # permissions
+        if doc.owner_id != user.id and user.role != "admin":
+            raise ValueError("Нет прав")
+
+        # target parent (optional)
         if new_parent_id:
             parent = await self.session.get(Document, new_parent_id)
-            if not parent:
-                raise Exception("Целевая папка не найдена")
-            new_base_path = f"{parent.file_path}/{doc.name}" if parent.file_path else doc.name
+            if not parent or parent.file_type != "folder":
+                raise ValueError("Целевая папка не найдена")
+
+            # cannot move into its descendant
+            if parent.file_path.startswith(f"{doc.file_path}/"):
+                raise ValueError("Нельзя переместить элемент в собственную подпапку")
+
+            new_rel = f"{parent.file_path}/{doc.name}" if parent.file_path else doc.name
         else:
-            # перемещение в корень
-            new_base_path = doc.name
+            # move to root
+            new_rel = doc.name
 
-        old_base_path = doc.file_path
+        # compute absolute paths WITHOUT requiring they exist
+        uploads_root = Path(settings.upload_dir) / str(user.tenant_id) / str(user.department_id)
+        old_rel = doc.file_path
+        old_abs = uploads_root / old_rel
+        new_abs = uploads_root / new_rel
 
-        # 2. Обновляем путь у самого документа
+        # ensure destination parent exists, then move if source exists
+        new_abs.parent.mkdir(parents=True, exist_ok=True)  # create .../PepsiCO/2.Рабочая папка
+        if old_abs.exists():
+            shutil.move(str(old_abs), str(new_abs))  # moves files or directories
+        # If your storage may not have a physical directory (e.g., metadata only), skip silently.
+
+        # update DB: parent_id + file_path
         doc.parent_id = new_parent_id
-        doc.file_path = new_base_path
+        doc.file_path = new_rel
 
-        # 3. Обновляем все дочерние документы (рекурсивно по file_path)
+        # update descendants’ file_path
         children = (
             await self.session.execute(
                 select(Document).where(
                     Document.tenant_id == user.tenant_id,
                     Document.department_id == user.department_id,
-                    Document.file_path.like(f"{old_base_path}/%")
+                    Document.file_path.like(f"{old_rel}/%")
                 )
             )
         ).scalars().all()
 
-
         for child in children:
-            child.file_path = child.file_path.replace(old_base_path, new_base_path, 1)
+            child.file_path = child.file_path.replace(old_rel, new_rel, 1)
 
-        # 4. Перемещаем файлы на диске (если есть)
-        try:
-            old_abs_path = await get_file_path(old_base_path)
-            new_abs_path = await get_file_path(new_base_path)
-            os.makedirs(os.path.dirname(new_abs_path), exist_ok=True)
-            shutil.move(old_abs_path, new_abs_path)
-        except FileNotFoundError:
-            pass  # если файла на диске нет, игнорируем
-        except Exception as e:
-            raise Exception(f"Ошибка при перемещении файлов: {e}")
-
-        await self.session.flush()
         await self.session.commit()
-
+        await self.session.refresh(doc)
         return doc
-
-
 
     
     async def _create_or_update_document(
@@ -283,37 +305,33 @@ class MetadataRepository(BaseRepository[Document]):
         tenant_id: int,
         department_id: int,
     ) -> list[Document]:
-        doc_alias = aliased(Document)
-
-        # базовый уровень = сам root
-        base = select(Document.id).where(
-            Document.id == root_id,
-            Document.tenant_id == tenant_id,
-            Document.department_id == department_id,
-        )
-
-        recursive = (
-            select(Document.id)
-            .join(doc_alias, Document.parent_id == doc_alias.id)
-            .where(Document.tenant_id == tenant_id)
-            .where(Document.department_id == department_id)
-        )
-
-        cte = base.union_all(recursive).cte(name="tree", recursive=True)
-
+        """
+        Return ONLY direct children of root_id within the same tenant/department.
+        This is a simple, non-recursive query for the /v2/children/{parent_id} endpoint.
+        """
         result = await self.session.execute(
-            select(Document).join(cte, Document.id == cte.c.id)
+            select(Document)
+            .where(
+                Document.parent_id == root_id,
+                Document.tenant_id == tenant_id,
+                Document.department_id == department_id,
+            )
+            .order_by(Document.file_type.desc(), Document.name.asc())
         )
         return result.scalars().all()
-    
+        
 
 
     async def _list_descendants_raw(self, root: Document) -> list[Document]:
+        """
+        Return ALL descendants of root (excluding the root itself).
+        Uses a proper recursive CTE that references the CTE in the recursive term.
+        """
         tenant_id = root.tenant_id
         department_id = root.department_id
         root_id = root.id
 
-        # сид: сам корень (в рамках того же tenant/department)
+        # seed: the root within same tenant/department
         base = select(Document.id).where(
             Document.id == root_id,
             Document.tenant_id == tenant_id,
@@ -321,7 +339,7 @@ class MetadataRepository(BaseRepository[Document]):
         )
         cte = base.cte(name="tree", recursive=True)
 
-        # шаг рекурсии — JOIN ИМЕННО НА CTE
+        # recursive step - JOIN back to CTE
         step = (
             select(Document.id)
             .select_from(Document)
@@ -333,7 +351,7 @@ class MetadataRepository(BaseRepository[Document]):
         )
         cte = cte.union_all(step)
 
-        # вернём ORM-объекты без корня
+        # return ORM objects except the root
         result = await self.session.execute(
             select(Document)
             .join(cte, Document.id == cte.c.id)
@@ -346,7 +364,37 @@ class MetadataRepository(BaseRepository[Document]):
     async def list_children(
         self, owner_id: str, parent_id: Optional[int] = None, recursive: bool = False
     ) -> list[DocumentMetadataRead]:
-        docs = await self._list_children_raw(owner_id, parent_id, recursive)
+        """
+        - If recursive=False: list direct children under parent_id (same tenant/department).
+        - If recursive=True: list the full subtree (excluding the root).
+        NOTE: owner_id kept for permission checks; not used for filtering here.
+        """
+        if parent_id is None:
+            return []
+
+        # Prefer tenant/department from repo context (e.g., set at construction from JWT).
+        tenant_id = getattr(self, "tenant_id", None)
+        department_id = getattr(self, "department_id", None)
+
+        # If not set, infer them from the parent/root document.
+        root_doc = await self.session.get(Document, parent_id)
+        if not root_doc:
+            return []
+
+        if tenant_id is None or department_id is None:
+            tenant_id = root_doc.tenant_id
+            department_id = root_doc.department_id
+
+        if recursive:
+            docs = await self._list_descendants_raw(root_doc)
+        else:
+            docs = await self._list_children_raw(
+                root_id=parent_id,
+                tenant_id=int(tenant_id),
+                department_id=int(department_id),
+            )
+
+        # Pydantic v1 style; if you're on v2, use model_validate with from_attributes=True
         return [DocumentMetadataRead.from_orm(d) for d in docs]
 
 
@@ -463,8 +511,77 @@ class MetadataRepository(BaseRepository[Document]):
         files_only: bool = False,        # ← NEW
         limit: int = 100,
         offset: int = 0,
+        root_id: Optional[int] = None,        # ⟵ NEW
+
     ):
         # Guard: both flags at once is ambiguous
+        if root_id is not None:
+            # собираем всё поддерево root_id (включая сам корень)
+            base = (
+                select(Document)
+                .where(Document.tenant_id == owner.tenant_id)
+                .where(Document.department_id == owner.department_id)
+                .where(Document.status != DocStatus.deleted)
+            )
+            if only_folders:
+                base = base.where(Document.file_type == "folder")
+            elif files_only:
+                base = base.where(Document.file_type != "folder")
+
+            # корень поддерева
+            root_base = base.where(Document.id == root_id)
+
+            d_parent = aliased(Document)
+            d_child  = aliased(Document)
+
+            rec = (
+                select(d_child)
+                .join(d_parent, d_child.parent_id == d_parent.id)
+                .where(d_child.tenant_id == owner.tenant_id)
+                .where(d_child.department_id == owner.department_id)
+                .where(d_child.status != DocStatus.deleted)
+            )
+            if only_folders:
+                rec = rec.where(d_child.file_type == "folder")
+            elif files_only:
+                rec = rec.where(d_child.file_type != "folder")
+
+            cte = root_base.union_all(rec).cte(name="subtree", recursive=True)
+
+            # НЕрекурсивный режим: показываем «текущий уровень» внутри поддерева
+            if not recursive:
+                # parent_id=None трактуем как «дети root_id»
+                effective_parent = root_id if parent_id is None else parent_id
+
+                rows_q = (
+                    select(Document)
+                    .join(cte, cte.c.id == Document.id)
+                    .where(Document.parent_id == effective_parent)
+                    .offset(offset).limit(limit)
+                )
+
+                cnt_q = (
+                    select(func.count())
+                    .select_from(
+                        select(Document.id)
+                        .join(cte, cte.c.id == Document.id)
+                        .where(Document.parent_id == effective_parent)
+                        .subquery()
+                    )
+                )
+                total = (await self.session.execute(cnt_q)).scalar_one()
+                docs  = (await self.session.execute(rows_q)).scalars().all()
+                return {"documents": [DocumentMetadataRead.model_validate(d, from_attributes=True) for d in docs],
+                        "total_count": int(total)}
+
+            # Рекурсивный режим: отдаём всё поддерево (с пагинацией/фильтрами)
+            rows_q = select(Document).join(cte, cte.c.id == Document.id).offset(offset).limit(limit)
+            cnt_q  = select(func.count()).select_from(select(Document.id).join(cte, cte.c.id == Document.id).subquery())
+            total  = (await self.session.execute(cnt_q)).scalar_one()
+            docs   = (await self.session.execute(rows_q)).scalars().all()
+            return {"documents": [DocumentMetadataRead.model_validate(d, from_attributes=True) for d in docs],
+                    "total_count": int(total)}
+
         if only_folders and files_only:
             files_only = False  # or raise ValueError("only_folders and files_only are mutually exclusive")
 

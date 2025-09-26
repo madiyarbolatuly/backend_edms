@@ -22,6 +22,8 @@ from pathlib import PurePosixPath
 
 from fastapi.responses import FileResponse
 from app.db.models import logger
+from sqlalchemy.exc import NoResultFound  # if you use SQLAlchemy
+
 
 
 from pydantic import BaseModel
@@ -277,31 +279,30 @@ async def list_children(
 ):
     return await repo.list_children(owner_id=user.id, parent_id=parent_id)
 
-@router.post(
-    "/{document_id}/move",
-    status_code=status.HTTP_200_OK,
-    name="move_document",
-)
+@router.post("/{document_id}/move", status_code=status.HTTP_200_OK, name="move_document")
 async def move_document(
     document_id: int,
     body: MoveRequest,
-    metadata_repository: MetadataRepository = Depends(get_repository(MetadataRepository)),
+    metadata_repository = Depends(get_repository(MetadataRepository)),
     user: TokenData = Depends(get_current_user),
 ):
-    """
-    Переместить документ/папку в другой parent_id.
-    """
-    # запрет перемещать сам в себя
+    # cannot move into itself
     if body.target_parent_id == document_id:
         raise http_400(msg="Нельзя переместить элемент в самого себя")
 
     try:
-        moved = await metadata_repository.move_document(
+        return await metadata_repository.move_document(
             document_id=document_id,
             new_parent_id=body.target_parent_id,
-            
             user=user,
         )
-        return moved
-    except Exception as e:
-        raise http_404(msg=f"Не удалось переместить документ: {e}")
+    except ValueError as ve:
+        # e.g. parent not found, invalid target, duplicate name, child-of-self, etc.
+        raise http_400(msg=str(ve))
+    except FileNotFoundError as fe:
+        # when source really missing on disk
+        raise http_404(msg=str(fe))
+    except Exception as exc:
+        # unexpected — log it and fail as 500
+        # logger.exception("Move failed: %s -> %s", document_id, body.target_parent_id)
+        raise http_500(msg=f"Не удалось переместить документ: {exc}")

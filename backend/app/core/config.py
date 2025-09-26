@@ -30,16 +30,16 @@ class GlobalConfig(BaseSettings):
     db_echo_log: bool = str(os.environ.get("DEBUG", "False")).lower() == "true"
 
     # ─── user config ────────────────────────────────────────────────────────────
-    local_storage_path: str = os.environ.get("LOCAL_STORAGE_PATH", "./uploads")
+    local_storage_path: str = os.getenv("LOCAL_STORAGE_PATH", "./uploads")
 
     # ─── add this alias immediately below ───────────────────────────────────────
     @property
     def upload_dir(self) -> str:
-        """
-        Alias for backwards compatibility: use local_storage_path
-        everywhere in your code as settings.upload_dir.
-        """
         return self.local_storage_path
+    
+    @property
+    def UPLOADS_DIR(self) -> str:
+        return self.upload_dir
 
     access_token_expire_min: int = os.environ.get("ACCESS_TOKEN_EXPIRE_MIN")
     refresh_token_expire_min: int = os.environ.get("REFRESH_TOKEN_EXPIRE_MIN")

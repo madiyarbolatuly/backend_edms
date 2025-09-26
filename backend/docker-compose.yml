@@ -34,7 +34,7 @@ services:
       - /home/fanatik/madiyar/final/docedms/backend/uploads/1/1:/usr/src/app/uploads/1/1
 
   postgres:
-    image: postgres:16
+    image: postgres:17
     env_file: app/.env
     volumes:
       - postgres-db:/var/lib/postgresql/data
