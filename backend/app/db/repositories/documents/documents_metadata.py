@@ -30,7 +30,7 @@ from enum import Enum
 from app.core.config import settings
 from app.db.models import logger
 from sqlalchemy.orm import aliased
-from sqlalchemy import select, update, insert, delete, func, and_
+from sqlalchemy import select, update, insert, delete, func, and_, or_
 from pathlib import PurePosixPath, Path
 import os, shutil
 from app.api.dependencies.repositories import get_file_path
@@ -93,40 +93,36 @@ class MetadataRepository(BaseRepository[Document]):
 
     async def _get_instance(self, document: Union[str, UUID], owner: TokenData):
         try:
-            # First try to convert to integer ID (for database IDs like 3)
+            # сначала пытаемся как integer ID
             document_id = int(str(document))
-            stmt = (
-                select(self.doc_cls)
-                .where(self.doc_cls.owner_id == owner.id)
-                .where(self.doc_cls.tenant_id == owner.tenant_id)
-                .where(self.doc_cls.department_id == owner.department_id)
-                .where(self.doc_cls.id == document_id)  # Search by integer ID
-                .where(self.doc_cls.deleted_at.is_(None))
-            )
+            base_filter = self.doc_cls.id == document_id
         except ValueError:
             try:
-                # If not an integer, try to convert to UUID
+                # или как UUID
                 document_id = UUID(str(document))
-                stmt = (
-                    select(self.doc_cls)
-                    .where(self.doc_cls.owner_id == owner.id)
-                    .where(self.doc_cls.tenant_id == owner.tenant_id)
-                    .where(self.doc_cls.department_id == owner.department_id)
-                    .where(self.doc_cls.id == document_id)  # Search by UUID
-                    .where(self.doc_cls.deleted_at.is_(None))
-                )
+                base_filter = self.doc_cls.id == document_id
             except ValueError:
                 from urllib.parse import unquote
-                decoded_name = unquote(document)  
-                
-                stmt = (
-                    select(self.doc_cls)
-                    .where(self.doc_cls.owner_id == owner.id)
-                    .where(self.doc_cls.tenant_id == owner.tenant_id)
-                    .where(self.doc_cls.department_id == owner.department_id)
-                    .where(self.doc_cls.name == decoded_name)  # Search by decoded name
-                    .where(self.doc_cls.deleted_at.is_(None))
+                decoded_name = unquote(document)
+                base_filter = self.doc_cls.name == decoded_name
+
+        stmt = (
+            select(self.doc_cls)
+            .where(self.doc_cls.tenant_id == owner.tenant_id)
+            .where(self.doc_cls.department_id == owner.department_id)
+            .where(self.doc_cls.deleted_at.is_(None))
+            .where(base_filter)
+            .where(
+                or_(
+                    self.doc_cls.status == "public",
+                    self.doc_cls.owner_id == owner.id,
+                    # если есть таблица shared_documents:
+                    # self.doc_cls.id.in_(
+                    #     select(shared.document_id).where(shared.user_id == owner.id)
+                    # )
                 )
+            )
+        )
 
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
