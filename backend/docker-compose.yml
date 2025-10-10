@@ -8,11 +8,16 @@ services:
     env_file: app/.env
     volumes:
       - ./:/usr/src/app
-      - /home/fanatik/madiyar/final/docedms/backend/uploads/1/1:/usr/src/app/uploads/1/1
+      - /home/fanatik/madiyar/final/docedms/backend/uploads:/usr/src/app/uploads:rw
     environment:
       LANG: C.UTF-8
       LC_ALL: C.UTF-8
-
+      LOCAL_STORAGE_PATH: /usr/src/app/uploads
+    command: >
+      sh -c "
+        ln -sfn /usr/src/app/uploads/1/1/Projects-2025 /usr/src/app/uploads/Projects-2025 &&
+        uvicorn app.main:app --host 0.0.0.0 --port 8000
+      "
   scanner:
     build: .
     command: python app/scan/scan_and_upload.py
@@ -34,7 +39,7 @@ services:
       - /home/fanatik/madiyar/final/docedms/backend/uploads/1/1:/usr/src/app/uploads/1/1
 
   postgres:
-    image: postgres:17
+    image: postgres:16
     env_file: app/.env
     volumes:
       - postgres-db:/var/lib/postgresql/data
