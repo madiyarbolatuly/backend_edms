@@ -6,7 +6,7 @@ Idempotent filesystem → documents loader.
 
 Handles these uniqueness variants (tries them in order):
   A) (tenant_id, department_id, file_path)          -- your "uniq_file"
-  B) (title, parent_id)                              -- your "uq_title_parent"
+  B) (title, parent_id)                             -- your "uq_title_parent"
   C) (tenant_id, department_id, file_type, file_path)
 
 Skips junk files (Thumbs.db, desktop.ini, .DS_Store).
@@ -54,7 +54,9 @@ EXCLUDE_DIRS  = {
 def wait_for_postgres(retries=10, delay=3):
     for i in range(retries):
         try:
-            with psycopg.connect(dbname=DB_NAME, user=USER, password=PASSWORD, host=HOST, port=PORT) as conn:
+            with psycopg.connect(
+                dbname=DB_NAME, user=USER, password=PASSWORD, host=HOST, port=PORT
+            ) as conn:
                 with conn.cursor() as cur:
                     cur.execute("SELECT 1;")
             print("✅ Postgres is ready!")
@@ -160,7 +162,7 @@ def should_skip_dir(name: str) -> bool:
     n = name.strip()
     return n in EXCLUDE_DIRS or n.startswith(".Trash") or n == "" or n == "lost+found"
 
-def process_directory(cur, parent_id: int, fs_path: Path):
+def process_directory(cur, parent_id: int, fs_path: Path, seen_paths: set[str]):
     for entry in fs_path.iterdir():
         name = entry.name
 
@@ -168,6 +170,7 @@ def process_directory(cur, parent_id: int, fs_path: Path):
             if should_skip_dir(name):
                 continue
             db_path = norm_rel_db_path(entry)
+            seen_paths.add(db_path)
             folder_id = upsert_document(
                 cur,
                 file_type="folder",
@@ -175,7 +178,7 @@ def process_directory(cur, parent_id: int, fs_path: Path):
                 file_path=db_path, parent_id=parent_id,
                 file_hash=None
             )
-            process_directory(cur, folder_id, entry)
+            process_directory(cur, folder_id, entry, seen_paths)
             continue
 
         # Files
@@ -188,6 +191,7 @@ def process_directory(cur, parent_id: int, fs_path: Path):
             file_hash = None  # hashing errors shouldn't stop scanning
 
         db_path = norm_rel_db_path(entry)
+        seen_paths.add(db_path)
         upsert_document(
             cur,
             file_type="file",
@@ -219,6 +223,113 @@ def get_or_create_root(cur) -> int:
         file_path=f"{ROOT_PREFIX}", parent_id=None, file_hash=None
     )
 
+def load_existing_paths(cur) -> set[str]:
+    """
+    All paths in DB for this tenant/department under this ROOT_PREFIX.
+    """
+    cur.execute(
+        """
+        SELECT file_path
+        FROM documents
+        WHERE tenant_id=%s AND department_id=%s
+          AND (file_path = %s OR file_path LIKE %s)
+        """,
+        (TENANT_ID, DEPARTMENT_ID, ROOT_PREFIX, f"{ROOT_PREFIX}/%"),
+    )
+    return {row[0] for row in cur.fetchall()}
+
+def delete_stale_paths(cur, existing_paths: set[str], seen_paths: set[str]):
+    """
+    Remove documents that no longer exist in filesystem.
+
+    Rules:
+      - Only paths in existing_paths but not in seen_paths are considered stale.
+      - Never delete documents that are referenced from shared_documents.
+      - Never delete a document that still has children (folders/files) in documents.
+      - Delete in iterations from leaves up to avoid parent_id FK violations.
+    """
+    stale_paths = existing_paths - seen_paths
+    if not stale_paths:
+        return
+
+    remaining_paths = set(stale_paths)
+    total_deleted = 0
+    total_shared_protected = 0
+
+    while remaining_paths:
+        # Load current info for remaining stale paths
+        cur.execute(
+            """
+            SELECT d.id,
+                   d.file_path,
+                   EXISTS (
+                       SELECT 1 FROM shared_documents s
+                       WHERE s.document_id = d.id
+                   ) AS is_shared,
+                   EXISTS (
+                       SELECT 1 FROM documents c
+                       WHERE c.parent_id = d.id
+                   ) AS has_children
+            FROM documents d
+            WHERE d.tenant_id = %s
+              AND d.department_id = %s
+              AND d.file_path = ANY(%s)
+            """,
+            (TENANT_ID, DEPARTMENT_ID, list(remaining_paths)),
+        )
+        rows = cur.fetchall()
+        if not rows:
+            break
+
+        leaf_ids: list[int] = []
+        leaf_paths: list[str] = []
+        newly_protected_shared = 0
+
+        for doc_id, path, is_shared, has_children in rows:
+            # if shared – never delete, drop from remaining
+            if is_shared:
+                remaining_paths.discard(path)
+                newly_protected_shared += 1
+                continue
+            # if has children – cannot delete in this iteration
+            if has_children:
+                continue
+            # leaf, not shared – safe to delete now
+            leaf_ids.append(doc_id)
+            leaf_paths.append(path)
+
+        total_shared_protected += newly_protected_shared
+
+        if not leaf_ids:
+            # No more deletable leaves among remaining_paths:
+            # stop to avoid infinite loop.
+            break
+
+        cur.execute(
+            """
+            DELETE FROM documents
+            WHERE id = ANY(%s)
+            """,
+            (leaf_ids,),
+        )
+        total_deleted += len(leaf_ids)
+
+        # Remove deleted paths from remaining set
+        for p in leaf_paths:
+            remaining_paths.discard(p)
+
+    if total_deleted:
+        print(f"🧹 Removed {total_deleted} stale records from DB")
+    if total_shared_protected:
+        print(
+            f"🔒 Skipped {total_shared_protected} stale records that are shared "
+            f"(kept to preserve shared links)"
+        )
+    if remaining_paths:
+        # These are stale by path, but still have children that are not deletable
+        # (e.g. weird DB state); we leave them to satisfy FK constraints.
+        print(f"⚠ Left {len(remaining_paths)} stale records because they still have children")
+
 def main():
     root_dir = Path(ROOT_SCAN)
     if not root_dir.is_dir():
@@ -228,10 +339,24 @@ def main():
 
     wait_for_postgres()
 
-    with psycopg.connect(dbname=DB_NAME, user=USER, password=PASSWORD, host=HOST, port=PORT) as conn:
+    with psycopg.connect(
+        dbname=DB_NAME, user=USER, password=PASSWORD, host=HOST, port=PORT
+    ) as conn:
         with conn.cursor() as cur:
+            existing_paths = load_existing_paths(cur)
+
+            seen_paths: set[str] = set()
+
             root_id = get_or_create_root(cur)
-            process_directory(cur, root_id, root_dir)
+            # корневая папка тоже часть дерева
+            seen_paths.add(ROOT_PREFIX)
+
+            process_directory(cur, root_id, root_dir, seen_paths)
+
+            # удалить всё, чего больше нет в файловой системе,
+            # но не трогаем shared и не ломаем parent_id FK
+            delete_stale_paths(cur, existing_paths, seen_paths)
+
         conn.commit()
 
     print(f"✔ Indexed {ROOT_SCAN} as '{ROOT_PREFIX}' (no duplicates; junk skipped)")
