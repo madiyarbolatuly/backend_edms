@@ -2,7 +2,6 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from fastapi.openapi.utils import get_openapi
 from contextlib import asynccontextmanager
 import pathlib
 from app.api.routes.onlyoffice import router as onlyoffice_router  # import ONLYOFFICE router
@@ -24,10 +23,13 @@ app = FastAPI(
     title=settings.title,
     version=settings.version,
     description=settings.description,
-    docs_url=settings.docs_url,
     lifespan=lifespan,
-    swagger_ui_parameters={"persistAuthorization": True},  # ← запоминаем JWT
+    swagger_ui_parameters={"persistAuthorization": True},
+    docs_url=settings.docs_url,        # например "/docs"
+    redoc_url=settings.redoc_url,      # например None или "/redoc"
+    openapi_url=settings.openapi_url,  # например "/openapi.json"
 )
+
 
 app.add_middleware(
     CORSMiddleware,

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Script to seed initial tenants and departments data.
 Run this after the database is set up and migrations are applied.

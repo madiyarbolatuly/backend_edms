@@ -9,7 +9,12 @@ from app.core.exceptions import http_404
 from app.db.repositories.documents.documents_metadata import MetadataRepository
 from app.db.repositories.documents.document_sharing import SharedDocumentRepository
 from app.schemas.auth.bands import TokenData
-from app.schemas.documents.document_sharing import SharingRequest
+from app.schemas.documents.document_sharing import (
+    SharingRequest,
+    SharedDocumentListResponse,
+    SharedDocumentRead,
+    SharedDocumentUpdate,
+)
 from app.api.dependencies.mail_service import mail_service
 # 2.5) resolve recipients
 from app.db.tables.auth.auth import User
@@ -139,19 +144,88 @@ async def share_link_document(
 async def shared_by_me(
     repo: SharedDocumentRepository = Depends(get_repository(SharedDocumentRepository)),
     user: TokenData = Depends(get_current_user),
-):
+) -> SharedDocumentListResponse:
     """
     Вернёт список документов, расшаренных текущим пользователем.
     """
-    return await repo.list_shared_by_user(user.id)
+    rows = await repo.list_shared_by_user_rich(user.id)
+    items: list[SharedDocumentRead] = []
+    for share, shared_with_username, shared_with_email, file_path in rows:
+        items.append(
+            SharedDocumentRead(
+                id=share.id,
+                token=share.token,
+                document_id=share.document_id,
+                filename=share.filename,
+                file_path=file_path,
+                expires_at=share.expires_at,
+                created_at=share.created_at,
+                shared_by=share.shared_by,
+                shared_with=share.shared_with,
+                shared_with_name=shared_with_username or shared_with_email,
+            )
+        )
+    return {"items": items}
 
 
 @router.get("/shared-with-me", status_code=status.HTTP_200_OK)
 async def shared_with_me(
     repo: SharedDocumentRepository = Depends(get_repository(SharedDocumentRepository)),
     user: TokenData = Depends(get_current_user),
-):
+) -> SharedDocumentListResponse:
     """
     Вернёт список документов, расшаренных другими для текущего пользователя.
     """
-    return await repo.list_shared_with_user(user.id)
+    rows = await repo.list_shared_with_user_rich(user.id)
+    items: list[SharedDocumentRead] = []
+    for share, shared_by_username, shared_by_email, file_path in rows:
+        items.append(
+            SharedDocumentRead(
+                id=share.id,
+                token=share.token,
+                document_id=share.document_id,
+                filename=share.filename,
+                file_path=file_path,
+                expires_at=share.expires_at,
+                created_at=share.created_at,
+                shared_by=share.shared_by,
+                shared_by_name=shared_by_username or shared_by_email,
+                shared_with=share.shared_with,
+            )
+        )
+    return {"items": items}
+
+
+@router.patch("/share/{share_id}", status_code=status.HTTP_200_OK)
+async def update_share(
+    share_id: int,
+    payload: SharedDocumentUpdate,
+    repo: SharedDocumentRepository = Depends(get_repository(SharedDocumentRepository)),
+    user: TokenData = Depends(get_current_user),
+):
+    updated = await repo.update_share(
+        share_id=share_id,
+        actor_id=user.id,
+        filename=payload.filename,
+        expires_at=payload.expires_at,
+    )
+    return {
+        "id": updated.id,
+        "token": updated.token,
+        "document_id": updated.document_id,
+        "filename": updated.filename,
+        "expires_at": updated.expires_at,
+        "created_at": updated.created_at,
+        "shared_by": updated.shared_by,
+        "shared_with": updated.shared_with,
+    }
+
+
+@router.delete("/share/{share_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_share(
+    share_id: int,
+    repo: SharedDocumentRepository = Depends(get_repository(SharedDocumentRepository)),
+    user: TokenData = Depends(get_current_user),
+):
+    await repo.delete_share(share_id=share_id, actor_id=user.id)
+    return None

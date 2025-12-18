@@ -15,6 +15,25 @@ class UserAuth(BaseSchema):
     password:      str       = Field(..., min_length=5, max_length=64)
     role:          str       = Field('viewer', description="admin/editor/viewer")
 
+
+class AdminCreateUser(BaseSchema):
+    username:      str       = Field(..., min_length=3, max_length=50)
+    email:         EmailStr  = Field(...)
+    role:          str       = Field('viewer')
+    department_id: Optional[int] = None
+    tenant_id:     Optional[int] = None
+    password:      Optional[str] = Field(None, min_length=5, max_length=64)
+
+
+class AdminUpdateUser(BaseSchema):
+    role: Optional[str] = Field(default=None)
+    department_id: Optional[int] = Field(default=None)
+    is_active: Optional[bool] = Field(default=None)
+
+
+class AdminResetPassword(BaseSchema):
+    password: Optional[str] = Field(default=None, min_length=5, max_length=64)
+
 # ----------------------------- OUTPUT SCHEMAS ---------------------------- #
 class UserOut(BaseSchema):
     id:            PydanticULID
@@ -40,3 +59,18 @@ class TokenData(BaseSchema):
     role:     Optional[str]  = None
     tenant_id: int 
     department_id: int 
+
+
+class AdminUserListResponse(BaseSchema):
+    items: list[UserOut]
+    total: int
+
+
+class AdminCreateUserResponse(BaseSchema):
+    user: UserOut
+    temporary_password: str
+
+
+class AdminResetPasswordResponse(BaseSchema):
+    user: UserOut
+    temporary_password: str
