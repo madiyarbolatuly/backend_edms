@@ -3,6 +3,10 @@ node_modules/
 __pycache__/
 *.py[cod]
 *$py.class
+backend/backup*.sql
+backend/*.sql
+backend/backups/
+*.sql
 
 # C extensions
 *.so
