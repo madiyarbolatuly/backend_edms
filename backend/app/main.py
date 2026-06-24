@@ -48,7 +48,7 @@ app.add_middleware(
 )
 
 
-uploads_path = pathlib.Path(__file__).parent.parent / "uploads"
+uploads_path = pathlib.Path(settings.upload_dir)  
 app.mount(
     "/files",
     StaticFiles(directory=str(uploads_path), html=False),

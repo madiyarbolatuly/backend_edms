@@ -126,7 +126,7 @@ async def share_link_document(
             expires_at=share_request.expires_at,
         )
     # 4) если есть получатели → разослать письмо
-    frontend_base = getattr(settings, "frontend_url", "http://localhost:8080")
+    frontend_base = getattr(settings, "frontend_url", "http://77.245.107.136:8080")
     shared_url = f"{frontend_base}/shared"
 
     if share_request.share_to:

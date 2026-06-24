@@ -12,12 +12,16 @@ services:
     environment:
       LANG: C.UTF-8
       LC_ALL: C.UTF-8
-      LOCAL_STORAGE_PATH: /usr/src/app/uploads
+      LOCAL_STORAGE_PATH: /usr/src/app/uploads/1/1
     command: >
-      sh -c "
-        ln -sfn /usr/src/app/uploads/1/1/Projects-2025 /usr/src/app/uploads/Projects-2025 &&
+     sh -c "
+        for d in /usr/src/app/uploads/1/1/Projects-*; do
+          name=$(basename \"$d\")
+          ln -sfn \"$d\" \"/usr/src/app/uploads/$name\"
+        done
         uvicorn app.main:app --host 0.0.0.0 --port 8000
-      "
+      "  
+      
   scanner:
     build: .
     command: python app/scan/scan_and_upload.py
@@ -26,8 +30,9 @@ services:
     profiles: ["manual"]  
     environment:
       POSTGRES_HOST: postgres
-      ROOT_SCAN: /usr/src/app/uploads/1/1/Projects-2025
-      ROOT_PREFIX: Projects-2025
+      # Scan the whole tenant/department root so all folders (Projects-2024/2025/2026, etc.) become accessible.
+      ROOT_SCAN: /usr/src/app/uploads/1/1
+      ROOT_PREFIX: "1/1"
       TENANT_ID: "1"
       DEPARTMENT_ID: "1"
       OWNER_ID: "c17ba46f-b4b0-473c-ac93-cb10cfed0f7e"
@@ -39,10 +44,11 @@ services:
       - /home/fanatik/madiyar/final/docedms/backend/uploads/1/1:/usr/src/app/uploads/1/1
 
   postgres:
-    image: postgres:17
+    image: postgres:16
     env_file: app/.env
     volumes:
       - postgres-db:/var/lib/postgresql/data
 
 volumes:
   postgres-db:
+
