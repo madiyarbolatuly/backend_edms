@@ -7,7 +7,7 @@ backend/backup*.sql
 backend/*.sql
 backend/backups/
 *.sql
-
+.backup_2025-11-21_06-50.sql
 # C extensions
 *.so
 
