@@ -168,3 +168,6 @@ cython_debug/
 *.pem
 downloads/
 uploads/
+backend/backup_*.sql
+*.swp
+backend/backup_*.sql
