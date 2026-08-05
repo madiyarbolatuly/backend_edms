@@ -574,14 +574,14 @@ class MetadataRepository(BaseRepository[Document]):
                 )
                 total = (await self.session.execute(cnt_q)).scalar_one()
                 docs  = (await self.session.execute(rows_q)).scalars().all()
-                return await self._serialize_with_folder_sizes(docs, int(total), owner)
+                return await self._serialize_with_folder_sizes(docs, int(total), owner, with_sizes=not only_folders)
 
             # Рекурсивный режим: отдаём всё поддерево (с пагинацией/фильтрами)
             rows_q = select(Document).join(cte, cte.c.id == Document.id).offset(offset).limit(limit)
             cnt_q  = select(func.count()).select_from(select(Document.id).join(cte, cte.c.id == Document.id).subquery())
             total  = (await self.session.execute(cnt_q)).scalar_one()
             docs   = (await self.session.execute(rows_q)).scalars().all()
-            return await self._serialize_with_folder_sizes(docs, int(total), owner)
+            return await self._serialize_with_folder_sizes(docs, int(total), owner, with_sizes=not only_folders)
 
         if only_folders and files_only:
             files_only = False  # or raise ValueError("only_folders and files_only are mutually exclusive")
@@ -615,7 +615,7 @@ class MetadataRepository(BaseRepository[Document]):
             stmt = base.offset(offset).limit(limit)
             docs = (await self.session.execute(stmt)).scalars().all()
 
-            return await self._serialize_with_folder_sizes(docs, int(total_count), owner)
+            return await self._serialize_with_folder_sizes(docs, int(total_count), owner, with_sizes=not only_folders)
 
         # Recursive branch
         parent_filter = (
@@ -670,7 +670,7 @@ class MetadataRepository(BaseRepository[Document]):
 
         docs = (await self.session.execute(rows_stmt)).scalars().all()
 
-        return await self._serialize_with_folder_sizes(docs, int(total), owner)
+        return await self._serialize_with_folder_sizes(docs, int(total), owner, with_sizes=not only_folders)
 
     async def _folder_sizes(self, folders: list[Document], owner: TokenData) -> dict[int, int]:
         """
@@ -679,30 +679,40 @@ class MetadataRepository(BaseRepository[Document]):
         The hierarchy is already encoded in `file_path`, so one prefix query per
         page beats a recursive walk (or a query per folder).
         """
-        if not folders:
+        wanted = [f for f in folders if (f.file_path or "").strip()]
+        if not wanted:
             return {}
 
-        totals: dict[int, int] = {}
-        for folder in folders:
-            prefix = (folder.file_path or "").rstrip("/")
-            if not prefix:
-                continue
-            stmt = (
-                select(func.coalesce(func.sum(Document.size), 0))
-                .where(Document.tenant_id == owner.tenant_id)
-                .where(Document.department_id == owner.department_id)
-                .where(Document.deleted_at.is_(None))
-                .where(Document.file_type != "folder")
-                .where(Document.file_path.like(f"{prefix}/%"))
-            )
-            totals[folder.id] = int((await self.session.execute(stmt)).scalar_one() or 0)
-        return totals
+        parent = aliased(Document)
+        child = aliased(Document)
+
+        stmt = (
+            select(parent.id, func.coalesce(func.sum(child.size), 0))
+            .select_from(parent)
+            .join(child, child.file_path.like(parent.file_path.concat("/%")))
+            .where(parent.id.in_([f.id for f in wanted]))
+            .where(child.tenant_id == owner.tenant_id)
+            .where(child.department_id == owner.department_id)
+            .where(child.deleted_at.is_(None))
+            .where(child.file_type != "folder")
+            .group_by(parent.id)
+        )
+
+        rows = (await self.session.execute(stmt)).all()
+        return {row[0]: int(row[1] or 0) for row in rows}
 
     async def _serialize_with_folder_sizes(
-        self, docs: list[Document], total: int, owner: TokenData
+        self, docs: list[Document], total: int, owner: TokenData,
+        with_sizes: bool = True,
     ) -> dict:
-        """Serialize a page of documents, filling in aggregated folder sizes."""
-        folders = [d for d in docs if d.file_type == "folder"]
+        """
+        Serialize a page of documents, filling in aggregated folder sizes.
+
+        `with_sizes=False` skips the aggregation entirely — the folder tree asks
+        for every folder at once and never renders a size, so paying for the
+        prefix scan there would stall the request on a large library.
+        """
+        folders = [d for d in docs if d.file_type == "folder"] if with_sizes else []
         sizes = await self._folder_sizes(folders, owner)
 
         items = []
