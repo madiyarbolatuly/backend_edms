@@ -11,6 +11,7 @@ from app.db.tables.documents.documents import Document  # noqa: F401
 from app.db.tables.documents.documents import Document  # noqa: F401
 from app.db.tables.departments import Department
 from app.db.tables.documents.documents import Document
+from app.db.tables.documents.share_link import ShareLink        # noqa: F401
 
 logger = logging.getLogger("sqlalchemy")
 

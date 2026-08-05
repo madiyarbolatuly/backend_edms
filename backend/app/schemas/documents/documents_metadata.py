@@ -23,7 +23,8 @@ class DocumentMetadataRead(DocumentMetadataBase):
     id: int
     name: str
     file_path: Optional[str] = None
-    size: Optional[str] = None
+    # Bytes. For folders this is the aggregated size of everything inside.
+    size: Optional[int] = None
     tags: Optional[List[str]] = Field(default_factory=list)
     status: DocStatus
 

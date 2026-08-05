@@ -10,16 +10,22 @@ from app.api.routes.documents.notify import router as notify_router
 from app.api.routes.auth.auth import router as auth_router
 from app.api.routes.onlyoffice import router as onlyoffice_router
 from app.api.routes.admin.users import router as admin_users_router
+from app.api.routes.public_share import router as public_share_router
 
 router = APIRouter()
 
 # единый стиль: каждый подроутер получает свой «листовой» префикс
 router.include_router(auth_router,        prefix="/u")
 router.include_router(admin_users_router, prefix="/admin")
-router.include_router(documents_router,   prefix="")              # т.к. внутри уже есть свои пути
 router.include_router(notify_router,      prefix="/notifications")
 router.include_router(metadata_router,    prefix="/metadata")
 router.include_router(filter_router,      prefix="/filter")
 router.include_router(sharing_router,     prefix="/sharing")
 router.include_router(folders_router,     prefix="/folders")      # ← БЕЗ /api/v2
 router.include_router(onlyoffice_router,  prefix="/office")       # ← перенесли ONLYOFFICE под /v2
+# публичный доступ по токену — БЕЗ авторизации
+router.include_router(public_share_router, prefix="/public")
+
+# ПОСЛЕДНИМ: внутри есть catch-all «/{file_name:path}» (DELETE/GET), который
+# иначе перехватывает запросы к /sharing/..., /metadata/... и остальным префиксам.
+router.include_router(documents_router,   prefix="")

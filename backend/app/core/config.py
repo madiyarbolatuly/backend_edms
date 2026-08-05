@@ -32,6 +32,11 @@ class GlobalConfig(BaseSettings):
     # ─── user config ────────────────────────────────────────────────────────────
     local_storage_path: str = os.getenv("LOCAL_STORAGE_PATH", "./uploads")
 
+    # Base address share links are built against. Must be reachable by the
+    # recipient, so it is the public deployment URL — never localhost or a LAN
+    # address, even when the app is opened from one.
+    frontend_url: str = os.getenv("FRONTEND_URL", "http://77.245.107.136:8080").rstrip("/")
+
     # ─── add this alias immediately below ───────────────────────────────────────
     @property
     def upload_dir(self) -> str:

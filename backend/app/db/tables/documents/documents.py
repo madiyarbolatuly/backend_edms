@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from ulid import ULID
 from sqlalchemy import (
-    Column, Integer, String, Boolean, DateTime, ForeignKey,
+    Column, Integer, BigInteger, String, Boolean, DateTime, ForeignKey,
     Enum as SQLEnum, UniqueConstraint
 )
 from sqlalchemy.dialects.postgresql import UUID
@@ -25,12 +25,17 @@ class Document(Base):
     file_type        = Column(String(255), nullable=False, server_default="file")
     document_number = Column(String, nullable=False, unique=True, default=lambda: str(ULID()))
     title           = Column(String, nullable=False)
-    name           = Column(String, nullable=False, unique=True)  # file name
+    # NOTE: intentionally NOT globally unique — the same file name legitimately
+    # appears in different folders. Uniqueness within a folder is enforced by
+    # uq_title_parent; uniqueness of a physical path by uniq_file (below).
+    name           = Column(String, nullable=False)  # file name
     status          = Column(SQLEnum(DocStatus), nullable=False, default=DocStatus.draft)
     file_path       = Column(String, nullable=False)     # local FS path
     is_archived     = Column(Boolean, default=False, nullable=False)
     is_favourited   = Column(Boolean, default=False, nullable=False)
     file_hash       = Column(String, nullable=True)
+    # Bytes on disk. NULL for folders — their size is aggregated on read.
+    size            = Column(BigInteger, nullable=True)
     created_at      = Column(DateTime(timezone=True),
                              default=datetime.now(timezone.utc),
                              nullable=False)
@@ -43,5 +48,10 @@ class Document(Base):
                                    cascade="all, delete",
                                    remote_side="Document.id")
 
-    __table_args__  = (UniqueConstraint("title", "parent_id",
-                                        name="uq_title_parent"),)
+    __table_args__  = (
+        UniqueConstraint("title", "parent_id", name="uq_title_parent"),
+        # One row per physical path within a tenant/department. The filesystem
+        # importer (app/scan/scan_and_upload.py) upserts against this.
+        UniqueConstraint("tenant_id", "department_id", "file_path",
+                         name="uniq_file"),
+    )

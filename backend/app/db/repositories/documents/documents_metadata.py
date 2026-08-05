@@ -243,11 +243,13 @@ class MetadataRepository(BaseRepository[Document]):
         user: TokenData,
         existing: Optional[Document],
         parent_id: Optional[int] = None,
+        size: Optional[int] = None,
         ) -> Document:
             if existing:
                 values = dict(
                     file_path=file_path,
                     file_hash=file_hash,
+                    size=size,
                     created_at=datetime.now(timezone.utc),
                     is_archived=False,
                     deleted_at=None,
@@ -273,6 +275,7 @@ class MetadataRepository(BaseRepository[Document]):
                 file_type="file",
                 file_path=file_path,
                 file_hash=file_hash,
+                size=size,
                 created_at=datetime.now(timezone.utc),
                 parent_id=parent_id,
             )
@@ -417,10 +420,14 @@ class MetadataRepository(BaseRepository[Document]):
 
 
     async def _stream_and_hash(self, file: UploadFile, *, rel_file_path: str, user: TokenData):
+        # `settings.upload_dir` already points at the tenant/department root
+        # (LOCAL_STORAGE_PATH=.../uploads/1/1), which is also what `/files` and
+        # the filesystem importer use. Appending tenant/department again wrote
+        # uploads to .../uploads/1/1/1/1/... and stored a path that did not
+        # match the imported documents.
         upload_root = Path(settings.upload_dir)
-        base_dir = upload_root / str(user.tenant_id) / str(user.department_id)
 
-        file_path = base_dir / rel_file_path
+        file_path = upload_root / rel_file_path
         file_path.parent.mkdir(parents=True, exist_ok=True)
 
         sha256 = hashlib.sha256()
@@ -567,16 +574,14 @@ class MetadataRepository(BaseRepository[Document]):
                 )
                 total = (await self.session.execute(cnt_q)).scalar_one()
                 docs  = (await self.session.execute(rows_q)).scalars().all()
-                return {"documents": [DocumentMetadataRead.model_validate(d, from_attributes=True) for d in docs],
-                        "total_count": int(total)}
+                return await self._serialize_with_folder_sizes(docs, int(total), owner)
 
             # Рекурсивный режим: отдаём всё поддерево (с пагинацией/фильтрами)
             rows_q = select(Document).join(cte, cte.c.id == Document.id).offset(offset).limit(limit)
             cnt_q  = select(func.count()).select_from(select(Document.id).join(cte, cte.c.id == Document.id).subquery())
             total  = (await self.session.execute(cnt_q)).scalar_one()
             docs   = (await self.session.execute(rows_q)).scalars().all()
-            return {"documents": [DocumentMetadataRead.model_validate(d, from_attributes=True) for d in docs],
-                    "total_count": int(total)}
+            return await self._serialize_with_folder_sizes(docs, int(total), owner)
 
         if only_folders and files_only:
             files_only = False  # or raise ValueError("only_folders and files_only are mutually exclusive")
@@ -610,10 +615,7 @@ class MetadataRepository(BaseRepository[Document]):
             stmt = base.offset(offset).limit(limit)
             docs = (await self.session.execute(stmt)).scalars().all()
 
-            return {
-                "documents": [DocumentMetadataRead.model_validate(doc, from_attributes=True) for doc in docs],
-                "total_count": int(total_count),
-            }
+            return await self._serialize_with_folder_sizes(docs, int(total_count), owner)
 
         # Recursive branch
         parent_filter = (
@@ -668,16 +670,55 @@ class MetadataRepository(BaseRepository[Document]):
 
         docs = (await self.session.execute(rows_stmt)).scalars().all()
 
-        return {
-            "documents": [DocumentMetadataRead.model_validate(doc, from_attributes=True) for doc in docs],
-            "total_count": int(total),
-        }
+        return await self._serialize_with_folder_sizes(docs, int(total), owner)
+
+    async def _folder_sizes(self, folders: list[Document], owner: TokenData) -> dict[int, int]:
+        """
+        Total bytes contained in each folder.
+
+        The hierarchy is already encoded in `file_path`, so one prefix query per
+        page beats a recursive walk (or a query per folder).
+        """
+        if not folders:
+            return {}
+
+        totals: dict[int, int] = {}
+        for folder in folders:
+            prefix = (folder.file_path or "").rstrip("/")
+            if not prefix:
+                continue
+            stmt = (
+                select(func.coalesce(func.sum(Document.size), 0))
+                .where(Document.tenant_id == owner.tenant_id)
+                .where(Document.department_id == owner.department_id)
+                .where(Document.deleted_at.is_(None))
+                .where(Document.file_type != "folder")
+                .where(Document.file_path.like(f"{prefix}/%"))
+            )
+            totals[folder.id] = int((await self.session.execute(stmt)).scalar_one() or 0)
+        return totals
+
+    async def _serialize_with_folder_sizes(
+        self, docs: list[Document], total: int, owner: TokenData
+    ) -> dict:
+        """Serialize a page of documents, filling in aggregated folder sizes."""
+        folders = [d for d in docs if d.file_type == "folder"]
+        sizes = await self._folder_sizes(folders, owner)
+
+        items = []
+        for doc in docs:
+            read = DocumentMetadataRead.model_validate(doc, from_attributes=True)
+            if doc.file_type == "folder":
+                read.size = sizes.get(doc.id, 0)
+            items.append(read)
+
+        return {"documents": items, "total_count": total}
 
 
     async def list_folders(self, owner: TokenData):
         q = (
             select(self.doc_cls.id, self.doc_cls.name, self.doc_cls.parent_id)
-            .where(self.doc_cls.is_folder.is_(True))
+            .where(self.doc_cls.file_type == "folder")
             # add tenant / ACL filters here as you do elsewhere
             .order_by(self.doc_cls.parent_id.nullsfirst(), self.doc_cls.name)
         )
@@ -834,7 +875,9 @@ class MetadataRepository(BaseRepository[Document]):
         doc = await self._get_instance(document=document, owner=user)
 
         if doc and doc.status != DocStatus.archived:
-            change = {"status": DocStatus.archived}
+            # Keep both flags in step: the list endpoints and the UI read
+            # `is_archived`, while the status drives the archive page.
+            change = {"status": DocStatus.archived, "is_archived": True}
             await self._execute_update(db_document=doc, changes=change)
             return DocumentMetadataRead(**doc.__dict__)
 
@@ -849,7 +892,7 @@ class MetadataRepository(BaseRepository[Document]):
         doc = await self._get_instance(document=file, owner=user)
 
         if doc and doc.status == DocStatus.archived:
-            change = {"status": "private"}
+            change = {"status": "private", "is_archived": False}
             await self._execute_update(db_document=doc, changes=change)
             return DocumentMetadataRead(**doc.__dict__)
         if doc and doc.status != DocStatus.archived:
@@ -945,16 +988,16 @@ class MetadataRepository(BaseRepository[Document]):
         return {"documents": [DocumentMetadataRead.from_orm(doc) for doc in result], "count": len(result)}
 
     async def favorited_list(self, user: TokenData):
+        # NB: this used to be `is_favourited OR status == public`, which matched
+        # every public document and returned the whole library.
         stmt = (
             select(Document)
             .where(Document.owner_id == user.id)
-            .where(
-                (Document.is_favourited  == True) | 
-                (Document.status == DocStatus.public)
-            )
+            .where(Document.is_favourited.is_(True))
             .where(Document.deleted_at.is_(None))
+            .order_by(Document.name)
         )
-        
+
         result = (await self.session.execute(stmt)).scalars().all()
         return {"documents": [DocumentMetadataRead.from_orm(doc) for doc in result], "count": len(result)}
 
@@ -1146,5 +1189,6 @@ class MetadataRepository(BaseRepository[Document]):
             user=user,
             existing=existing,
             parent_id=parent_id,
+            size=file_size,
         )
         return {"response": "success", "document": document}

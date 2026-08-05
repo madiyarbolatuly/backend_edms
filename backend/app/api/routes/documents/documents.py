@@ -265,7 +265,7 @@ async def upload_documents(
                 folder=folder_norm,
                 filename=filename,
                 user=user,
-                parent_id=parent_id,
+                parent_map={},
                 base_parent_id=parent_id
             )
             results.append(result)

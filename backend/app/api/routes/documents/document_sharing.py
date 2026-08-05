@@ -1,6 +1,9 @@
-from typing import Union, Dict
+import secrets
+from datetime import datetime, timezone
+from typing import Union, Dict, Optional
 from uuid import UUID
 from fastapi import APIRouter, Depends, status, HTTPException
+from sqlalchemy import select
 
 from app.api.dependencies.auth_utils import get_current_user
 from app.api.dependencies.repositories import get_repository
@@ -19,10 +22,74 @@ from app.api.dependencies.mail_service import mail_service
 # 2.5) resolve recipients
 from app.db.tables.auth.auth import User
 from app.db.repositories.auth.auth import AuthRepository
+from app.db.tables.documents.share_link import ShareLink
+from app.schemas.base import BaseSchema
 
 from app.db.models import logger
 
 router = APIRouter(tags=["Document Sharing"])
+
+
+class ShareLinkCreate(BaseSchema):
+    expires_at: Optional[datetime] = None
+
+
+@router.post("/link/{document_id}", status_code=status.HTTP_201_CREATED, name="create_share_link")
+async def create_share_link(
+    document_id: int,
+    body: ShareLinkCreate | None = None,
+    metadata_repository: MetadataRepository = Depends(get_repository(MetadataRepository)),
+    user: TokenData = Depends(get_current_user),
+) -> Dict[str, str]:
+    """
+    Create ONE public link for a document or folder.
+
+    Unlike /share-link/... (which records a per-document grant for a registered
+    user), this mints a single token for the whole object; the recipient needs
+    no account and sees only this object and what is inside it.
+    """
+    session = metadata_repository.session
+
+    item = await metadata_repository.get_by_id_visible(document_id, user)
+    if item is None:
+        raise http_404(msg=f"Документ с id={document_id} не найден")
+
+    link = ShareLink(
+        token=secrets.token_urlsafe(32),
+        document_id=item.id,
+        created_by=user.id,
+        expires_at=body.expires_at if body else None,
+    )
+    session.add(link)
+    await session.commit()
+
+    return {
+        "token": link.token,
+        "url": f"{settings.frontend_url}/s/{link.token}",
+        "name": item.name,
+    }
+
+
+@router.delete("/link/{token}", status_code=status.HTTP_200_OK, name="revoke_share_link")
+async def revoke_share_link(
+    token: str,
+    metadata_repository: MetadataRepository = Depends(get_repository(MetadataRepository)),
+    user: TokenData = Depends(get_current_user),
+) -> Dict[str, str]:
+    """Revoke a link. Kept as a row so the page can say "revoked", not "404"."""
+    session = metadata_repository.session
+    link = (
+        await session.execute(select(ShareLink).where(ShareLink.token == token))
+    ).scalar_one_or_none()
+
+    if link is None:
+        raise http_404(msg="Ссылка не найдена")
+    if link.created_by != user.id and user.role != "admin":
+        raise HTTPException(403, "Можно отозвать только свою ссылку")
+
+    link.revoked_at = datetime.now(timezone.utc)
+    await session.commit()
+    return {"status": "revoked"}
 
 @router.post(
     "/share-link/id/{file_id}",
@@ -47,12 +114,11 @@ async def share_link_document_by_id(
     except Exception:
         raise http_404(msg=f"Документ с id={file_id} не найден")
 
-    # 2) собираем id всех документов (если папка → всё содержимое)
-    if getattr(item, "is_folder", False):
-        descendants = await metadata_repository.list_documents_in_folder(
-            item.id, recursive=True
-        )
-        doc_ids = [d.id for d in descendants]
+    # 2) собираем id всех документов (если папка → всё её содержимое)
+    #    NB: Document has no `is_folder` column — folders are file_type == "folder".
+    if item.file_type == "folder":
+        descendants = await metadata_repository._list_descendants_raw(item)
+        doc_ids = [item.id] + [d.id for d in descendants]
     else:
         doc_ids = [item.id]
 
@@ -70,8 +136,7 @@ async def share_link_document_by_id(
         )
 
     # 4) уведомляем по email
-    frontend_base = getattr(settings, "frontend_url", "http://77.245.107.136:8080")
-    shared_url = f"{frontend_base}/shared"
+    shared_url = f"{settings.frontend_url}/shared"
 
     if share_request.share_to:
         for recipient in share_request.share_to:
@@ -106,9 +171,9 @@ async def share_link_document(
 
     # 2) получаем id файлов (если папка → все внутри)
     doc_ids: list[int] = []
-    if getattr(item, "is_folder", False):
-        descendants = await metadata_repository.list_documents_in_folder(item.id, recursive=True)
-        doc_ids = [d.id for d in descendants]
+    if getattr(item, "file_type", None) == "folder":
+        descendants = await metadata_repository._list_descendants_raw(item)
+        doc_ids = [item.id] + [d.id for d in descendants]
     else:
         doc_ids = [item.id]
 
@@ -126,17 +191,19 @@ async def share_link_document(
             expires_at=share_request.expires_at,
         )
     # 4) если есть получатели → разослать письмо
-    frontend_base = getattr(settings, "frontend_url", "http://77.245.107.136:8080")
-    shared_url = f"{frontend_base}/shared"
+    shared_url = f"{settings.frontend_url}/shared"
 
     if share_request.share_to:
         for recipient in share_request.share_to:
-            mail_service(
-                mail_to=recipient,
-                subject=f"Документ {item.name} был расшарен",
-                content=f"Вам предоставили доступ к документу {item.name}.\n\n"
-                        f"Откройте по ссылке: {shared_url}"
-            )
+            try:
+                mail_service(
+                    mail_to=recipient,
+                    subject=f"Документ {item.name} был расшарен",
+                    content=f"Вам предоставили доступ к документу {item.name}.\n\n"
+                            f"Откройте по ссылке: {shared_url}"
+                )
+            except Exception as e:
+                logger.warning(f"Mail not sent to {recipient}: {e}")
 
     return {"url": shared_url}
 

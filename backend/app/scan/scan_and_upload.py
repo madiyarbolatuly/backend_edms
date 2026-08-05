@@ -80,11 +80,11 @@ def norm_rel_db_path(abs_path: Path) -> str:
     db_path = f"{ROOT_PREFIX}/{str(rel).replace('\\', '/')}"
     return db_path.replace("//", "/")
 
-def _insert_base_params(file_type, title, name, status, file_path, parent_id, file_hash):
+def _insert_base_params(file_type, title, name, status, file_path, parent_id, file_hash, size):
     return (
         TENANT_ID, DEPARTMENT_ID, OWNER_ID,
         file_type, str(uuid.uuid4()), title, name,
-        status, file_path, file_hash, datetime.now(timezone.utc), parent_id
+        status, file_path, file_hash, size, datetime.now(timezone.utc), parent_id
     )
 
 def _sql_base():
@@ -93,13 +93,13 @@ def _sql_base():
           tenant_id, department_id, owner_id,
           file_type, document_number, title, name,
           status, file_path, is_archived, is_favourited,
-          file_hash, created_at, parent_id
+          file_hash, size, created_at, parent_id
         ) VALUES (
-          %s,%s,%s,%s,%s,%s,%s,%s,%s,false,false,%s,%s,%s
+          %s,%s,%s,%s,%s,%s,%s,%s,%s,false,false,%s,%s,%s,%s
         )
     """
 
-def upsert_document(cur, *, file_type, title, name, status, file_path, parent_id, file_hash=None) -> int:
+def upsert_document(cur, *, file_type, title, name, status, file_path, parent_id, file_hash=None, size=None) -> int:
     """
     Try three conflict targets in order:
       A) (tenant_id, department_id, file_path)
@@ -107,7 +107,7 @@ def upsert_document(cur, *, file_type, title, name, status, file_path, parent_id
       C) (tenant_id, department_id, file_type, file_path)
     Using SAVEPOINTs so a conflict doesn't abort the whole transaction.
     """
-    params = _insert_base_params(file_type, title, name, status, file_path, parent_id, file_hash)
+    params = _insert_base_params(file_type, title, name, status, file_path, parent_id, file_hash, size)
 
     # A) match "uniq_file" → (tenant_id, department_id, file_path)
     sql_A = _sql_base() + """
@@ -117,7 +117,8 @@ def upsert_document(cur, *, file_type, title, name, status, file_path, parent_id
             status    = EXCLUDED.status,
             parent_id = EXCLUDED.parent_id,
             file_type = EXCLUDED.file_type,
-            file_hash = COALESCE(EXCLUDED.file_hash, documents.file_hash)
+            file_hash = COALESCE(EXCLUDED.file_hash, documents.file_hash),
+            size      = EXCLUDED.size
         RETURNING id;
     """
 
@@ -128,7 +129,8 @@ def upsert_document(cur, *, file_type, title, name, status, file_path, parent_id
             name      = EXCLUDED.name,
             status    = EXCLUDED.status,
             file_path = EXCLUDED.file_path,
-            file_hash = COALESCE(EXCLUDED.file_hash, documents.file_hash)
+            file_hash = COALESCE(EXCLUDED.file_hash, documents.file_hash),
+            size      = EXCLUDED.size
         RETURNING id;
     """
 
@@ -139,7 +141,8 @@ def upsert_document(cur, *, file_type, title, name, status, file_path, parent_id
             name      = EXCLUDED.name,
             status    = EXCLUDED.status,
             parent_id = EXCLUDED.parent_id,
-            file_hash = COALESCE(EXCLUDED.file_hash, documents.file_hash)
+            file_hash = COALESCE(EXCLUDED.file_hash, documents.file_hash),
+            size      = EXCLUDED.size
         RETURNING id;
     """
 
@@ -176,7 +179,7 @@ def process_directory(cur, parent_id: int, fs_path: Path, seen_paths: set[str]):
                 file_type="folder",
                 title=name, name=name, status="public",
                 file_path=db_path, parent_id=parent_id,
-                file_hash=None
+                file_hash=None, size=None
             )
             process_directory(cur, folder_id, entry, seen_paths)
             continue
@@ -190,6 +193,11 @@ def process_directory(cur, parent_id: int, fs_path: Path, seen_paths: set[str]):
         except Exception:
             file_hash = None  # hashing errors shouldn't stop scanning
 
+        try:
+            file_size = entry.stat().st_size
+        except OSError:
+            file_size = None
+
         db_path = norm_rel_db_path(entry)
         seen_paths.add(db_path)
         upsert_document(
@@ -197,13 +205,20 @@ def process_directory(cur, parent_id: int, fs_path: Path, seen_paths: set[str]):
             file_type="file",
             title=name, name=name, status="public",
             file_path=db_path, parent_id=parent_id,
-            file_hash=file_hash
+            file_hash=file_hash, size=file_size
         )
 
 def get_or_create_root(cur) -> int:
     """
     Reuse existing root row if present (parent_id IS NULL).
+
+    The row is *stored* under ROOT_PREFIX (so file_path keeps matching the
+    filesystem), but it is *displayed* using the directory's own name — a root
+    titled "1/1" is meaningless in the UI, and top-level folders are surfaced
+    as projects by the frontend.
     """
+    root_title = Path(ROOT_SCAN).name or ROOT_PREFIX
+
     cur.execute(
         """
         SELECT id FROM documents
@@ -211,7 +226,7 @@ def get_or_create_root(cur) -> int:
           AND file_type='folder' AND title=%s AND parent_id IS NULL
         LIMIT 1;
         """,
-        (TENANT_ID, DEPARTMENT_ID, ROOT_PREFIX),
+        (TENANT_ID, DEPARTMENT_ID, root_title),
     )
     row = cur.fetchone()
     if row:
@@ -219,8 +234,8 @@ def get_or_create_root(cur) -> int:
     return upsert_document(
         cur,
         file_type="folder",
-        title=ROOT_PREFIX, name=ROOT_PREFIX, status="public",
-        file_path=f"{ROOT_PREFIX}", parent_id=None, file_hash=None
+        title=root_title, name=root_title, status="public",
+        file_path=f"{ROOT_PREFIX}", parent_id=None, file_hash=None, size=None
     )
 
 def load_existing_paths(cur) -> set[str]:
