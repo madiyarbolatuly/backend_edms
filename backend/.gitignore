@@ -171,3 +171,6 @@ uploads/
 backend/backup_*.sql
 *.swp
 backend/backup_*.sql
+
+# machine-local compose tweaks
+docker-compose.local.yml
