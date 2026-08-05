@@ -2,9 +2,9 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Tuple
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete, update
-import hashlib
-from random import randint
+from sqlalchemy import select, delete, update, exists
+from sqlalchemy.orm import aliased
+import secrets
 
 from app.db.tables.documents.shared import SharedDocument
 from app.db.tables.documents.documents import Document
@@ -17,10 +17,16 @@ class SharedDocumentRepository:
         self.session = session
 
     def _generate_token(self, source: str) -> str:
-        """Создаёт короткий 6-символьный токен на основе md5"""
-        digest = hashlib.md5(source.encode("utf-8")).hexdigest()
-        start = randint(0, len(digest) - 6)
-        return digest[start:start+6]
+        """
+        Unique token for one share record.
+
+        Was a 6-character slice of an md5 digest: 16.7M values, and sharing a
+        folder inserts one row per descendant, so collisions against rows
+        already in the table were routine — and the unique constraint failed
+        the whole share with a 500. `source` is kept for call-site
+        compatibility; the value no longer derives from it.
+        """
+        return secrets.token_urlsafe(9)
 
     async def create_share_records(
         self,
@@ -74,6 +80,27 @@ class SharedDocumentRepository:
         )
         return res.scalars().all()
 
+    def _only_top_level(self, q):
+        """
+        Keep the shared roots, drop everything shared only because it sits inside
+        them.
+
+        Sharing a folder writes one grant per descendant — the access checks need
+        them — so listing the rows verbatim turns "one folder" into every file it
+        contains. A row is a root when its parent was not shared to the same
+        person by the same person; documents at the library root have no parent
+        and always qualify.
+        """
+        inner = aliased(SharedDocument)
+        return q.where(
+            ~exists(
+                select(inner.id)
+                .where(inner.shared_with == SharedDocument.shared_with)
+                .where(inner.shared_by == SharedDocument.shared_by)
+                .where(inner.document_id == Document.parent_id)
+            )
+        )
+
     async def list_shared_with_user_rich(self, user_id: str) -> List[Tuple[SharedDocument, Optional[str], Optional[str], Optional[str]]]:
         """Return shares for user with resolved shared_by username/email and document file_path."""
         q = (
@@ -83,7 +110,7 @@ class SharedDocumentRepository:
             .where(SharedDocument.shared_with == user_id)
             .order_by(SharedDocument.expires_at.asc().nulls_last(), SharedDocument.created_at.desc())
         )
-        res = await self.session.execute(q)
+        res = await self.session.execute(self._only_top_level(q))
         return res.all()
 
     async def list_shared_by_user_rich(self, user_id: str) -> List[Tuple[SharedDocument, Optional[str], Optional[str], Optional[str]]]:
@@ -94,7 +121,7 @@ class SharedDocumentRepository:
             .where(SharedDocument.shared_by == user_id)
             .order_by(SharedDocument.expires_at.asc().nulls_last(), SharedDocument.created_at.desc())
         )
-        res = await self.session.execute(q)
+        res = await self.session.execute(self._only_top_level(q))
         return res.all()
 
     async def get_share(self, share_id: int) -> SharedDocument:
