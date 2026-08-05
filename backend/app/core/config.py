@@ -37,6 +37,27 @@ class GlobalConfig(BaseSettings):
     # address, even when the app is opened from one.
     frontend_url: str = os.getenv("FRONTEND_URL", "http://77.245.107.136:8080").rstrip("/")
 
+    # Browser origins allowed to call the API. Set CORS_ORIGINS (comma-separated)
+    # to override wholesale — a deployment that moves to a new address needs an
+    # env change, not a code change.
+    cors_origins_env: str = os.getenv("CORS_ORIGINS", "")
+
+    @property
+    def cors_origins(self) -> list[str]:
+        if self.cors_origins_env.strip():
+            return [o.strip().rstrip("/") for o in self.cors_origins_env.split(",") if o.strip()]
+        return [
+            "http://localhost:5173",
+            "http://localhost:3000",
+            "http://localhost:8080",
+            "http://localhost:8081",
+            "http://127.0.0.1:8000",
+            "http://77.245.107.136:8080",
+            "http://89.218.93.198:8080",
+            "http://192.168.8.121:8080",
+            "http://192.168.2.94:8080",
+        ]
+
     # ─── add this alias immediately below ───────────────────────────────────────
     @property
     def upload_dir(self) -> str:
