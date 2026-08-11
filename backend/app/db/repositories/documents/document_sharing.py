@@ -10,6 +10,7 @@ from app.db.tables.documents.shared import SharedDocument
 from app.db.tables.documents.documents import Document
 from app.db.tables.auth.auth import User
 from app.core.exceptions import http_403, http_404
+from app.core.utils import default_share_expiry
 
 
 class SharedDocumentRepository:
@@ -39,7 +40,7 @@ class SharedDocumentRepository:
         Добавляет записи о шаринге файлов/папок в таблицу shared_documents.
         """
         now = datetime.now(timezone.utc)
-        effective_exp = expires_at or (now + timedelta(days=7))
+        effective_exp = expires_at or default_share_expiry(now)
 
         docs = (
             await self.session.execute(
@@ -60,7 +61,12 @@ class SharedDocumentRepository:
                 )
             )
 
-        await self.session.commit()
+        # Flush, not commit. This is called once per recipient, so committing
+        # here made each recipient a separate transaction: a failure on
+        # recipient 3 of 5 left the first two committed with no way to roll
+        # back — and sharing a folder writes one row per descendant, so a
+        # partial share could be hundreds of rows. The caller commits once.
+        await self.session.flush()
 
     async def list_shared_by_user(self, user_id: str) -> List[SharedDocument]:
         """

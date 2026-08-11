@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from ulid import ULID
 from sqlalchemy import (
     Column, Integer, BigInteger, String, Boolean, DateTime, ForeignKey,
-    Enum as SQLEnum, UniqueConstraint
+    Enum as SQLEnum, Index, UniqueConstraint, func, text
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship, Mapped
@@ -36,8 +36,13 @@ class Document(Base):
     file_hash       = Column(String, nullable=True)
     # Bytes on disk. NULL for folders — their size is aggregated on read.
     size            = Column(BigInteger, nullable=True)
+    # The default must be a callable. `default=datetime.now(timezone.utc)` is
+    # evaluated once, while this module is being imported, so every row inserted
+    # without an explicit value was stamped with the *process start time* —
+    # which made `sort_by=created_at` meaningless. Same fix applied across every
+    # table module; `share_link.py` already had it right.
     created_at      = Column(DateTime(timezone=True),
-                             default=datetime.now(timezone.utc),
+                             default=lambda: datetime.now(timezone.utc),
                              nullable=False)
     deleted_at      = Column(DateTime(timezone=True))    # set when moved to trash
 
@@ -54,4 +59,20 @@ class Document(Base):
         # importer (app/scan/scan_and_upload.py) upserts against this.
         UniqueConstraint("tenant_id", "department_id", "file_path",
                          name="uniq_file"),
+
+        # Every listing — folder contents, the tree, the recursive CTE walk —
+        # filters on tenant + department + status and then on parent_id. Without
+        # these the planner seq-scans the whole table for one folder's children,
+        # which is the difference between a snappy tree and a multi-second one on
+        # a library of tens of thousands of rows.
+        Index("ix_documents_parent_id", parent_id),
+        Index("ix_documents_scope", tenant_id, department_id, status),
+        # Matches the ORDER BY of a folder listing (folders first, then name),
+        # so a page can be read straight off the index.
+        Index("ix_documents_parent_type_name", parent_id, file_type,
+              func.lower(name)),
+        # `_folder_sizes` aggregates children with `file_path LIKE 'parent/%'`.
+        # A btree only serves a prefix LIKE under text_pattern_ops.
+        Index("ix_documents_file_path_prefix", file_path,
+              postgresql_ops={"file_path": "text_pattern_ops"}),
     )

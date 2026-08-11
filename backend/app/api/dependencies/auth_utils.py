@@ -117,3 +117,18 @@ def get_current_admin(user: TokenData = Depends(get_current_user)) -> TokenData:
             detail="Admin privileges required",
         )
     return user
+
+
+#: Roles allowed to decide on a document under review. Viewers are read-only,
+#: so approving is limited to the two roles that can already change documents.
+REVIEWER_ROLES = frozenset({"admin", "editor"})
+
+
+def get_current_reviewer(user: TokenData = Depends(get_current_user)) -> TokenData:
+    """Ensure the caller may approve or reject a document."""
+    if user.role not in REVIEWER_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Требуются права редактора или администратора",
+        )
+    return user

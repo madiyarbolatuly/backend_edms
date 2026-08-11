@@ -7,7 +7,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy.engine import Row
 from app.api.dependencies.auth_utils import get_current_user
 from app.api.dependencies.repositories import get_repository, get_file_path
-from app.core.exceptions import http_400, http_404
+from app.core.exceptions import http_400, http_404, http_500
 from app.db.repositories.auth.auth import AuthRepository
 from app.db.repositories.documents.documents import DocumentRepository
 from app.db.repositories.documents.documents_metadata import MetadataRepository
@@ -69,39 +69,43 @@ async def empty_trash(
 ) -> None:
     await metadata_repository.empty_bin(owner=user)
 
+# Both trash routes are keyed by id. They used to take a file NAME and resolve it
+# by scanning the bin for the first match — but `name` is deliberately not unique
+# (the same file name is legitimate in two folders), so with two trashed items of
+# the same name the wrong one was restored or destroyed. The `:int` convertor is
+# the same idiom as `/file/{file_id:int}/download`; a non-numeric segment falls
+# through to the catch-all rather than 422-ing.
 @router.delete(
-    "/trash/{file_name:path}",
+    "/trash/{doc_id:int}",
     status_code=status.HTTP_204_NO_CONTENT,
     name="permanently_delete_doc",
 )
 async def perm_delete(
-    file_name: str,
+    doc_id: int,
     metadata_repository: MetadataRepository = Depends(
         get_repository(MetadataRepository)
     ),
     user: TokenData = Depends(get_current_user),
 ) -> None:
-    trash = await metadata_repository.bin_list(owner=user)
-    for entry in trash.get("response", []):
-        if entry.name == file_name:
-            await metadata_repository.perm_delete_a_doc(document=entry.id, owner=user)
-            return
-    raise http_404(msg=f"No file with name '{file_name}' in trash.")
+    # `perm_delete_a_doc` already 404s on an id that is unknown, not in the bin,
+    # or not the caller's. The name-scan this replaced would have broken anyway:
+    # it searched `bin_list`, which no longer lists nested rows.
+    await metadata_repository.perm_delete_a_doc(document=doc_id, owner=user)
 
 @router.post(
-    "/restore/{file}",
+    "/restore/{doc_id:int}",
     status_code=status.HTTP_200_OK,
     response_model=DocumentMetadataRead,
     name="restore_from_bin",
 )
 async def restore_bin(
-    file: str,
+    doc_id: int,
     metadata_repository: MetadataRepository = Depends(
         get_repository(MetadataRepository)
     ),
     user: TokenData = Depends(get_current_user),
 ) -> DocumentMetadataRead:
-    return await metadata_repository.restore(file=file, owner=user)
+    return await metadata_repository.restore(doc_id=doc_id, owner=user)
 
 @router.delete(
     "/{file_name:path}",
@@ -277,7 +281,7 @@ async def list_children(
     repo: MetadataRepository = Depends(get_repository(MetadataRepository)),
     user: TokenData = Depends(get_current_user),
 ):
-    return await repo.list_children(owner_id=user.id, parent_id=parent_id)
+    return await repo.list_children(user=user, parent_id=parent_id)
 
 @router.post("/{document_id}/move", status_code=status.HTTP_200_OK, name="move_document")
 async def move_document(

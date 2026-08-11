@@ -62,11 +62,15 @@ class DocUserAccessCreate(BaseSchema):
 
 # Notifications
 class Notification(BaseSchema):
+    # Field names follow the `notify` table. They used to be `receiver_id` and
+    # `notified_at`, which are not columns — so validating a real row raised
+    # ValidationError and `GET /v2/notifications` failed for any user who had
+    # even one notification. It only appeared to work while the table was empty.
     id: UUID
-    receiver_id: str
+    user_id: str
     message: str
     status: NotifyEnum
-    notified_at: datetime
+    created_at: datetime
 
 
 class NotifyPatchStatus(BaseSchema):

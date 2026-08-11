@@ -16,7 +16,7 @@ class DocumentSharing(Base):
     url: str = Column(String, unique=True)
     expires_at = Column(
         DateTime(timezone=True),
-        default=datetime.now(timezone.utc),
+        default=lambda: datetime.now(timezone.utc),
     )
     visits: int = Column(Integer)
     share_to: Optional[List[str]] = Column(ARRAY(String))

@@ -5,7 +5,7 @@ from fastapi import APIRouter, status, Depends
 
 from app.api.dependencies.auth_utils import get_current_user
 from app.api.dependencies.repositories import get_repository
-from app.core.exceptions import http_404
+from app.core.exceptions import http_400, http_404
 from app.db.repositories.documents.notify import NotifyRepo
 from app.schemas.auth.bands import TokenData
 from app.schemas.documents.bands import Notification, NotifyPatchStatus
@@ -58,8 +58,16 @@ async def patch_status(
             Otherwise, raises an HTTP_404 exception.
 
     Raises:
-        HTTP_404: If 'notification_id' is not provided and update_status.mark_all is set to False.
+        HTTP_400: If the body is missing or carries neither `mark_all` nor a status.
     """
+
+    # The body defaults to None, and this used to dereference it unconditionally
+    # — a PUT with no body raised AttributeError and 500'd instead of saying
+    # what was missing.
+    if updated_status is None:
+        raise http_400(
+            msg="Тело запроса обязательно: укажите либо mark_all, либо status."
+        )
 
     if updated_status.mark_all:
         return await repository.mark_all_read(user=user)
@@ -67,7 +75,7 @@ async def patch_status(
         return await repository.update_status(
             n_id=notification_id, updated_status=updated_status, user=user
         )
-    raise http_404(
+    raise http_400(
         msg="Bad Request: Make sure to either flag mark_all "
         "or enter notification_id along with correct status as payload."
     )

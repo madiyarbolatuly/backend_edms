@@ -5,19 +5,27 @@ from sqlalchemy import pool
 
 from alembic import context
 
+from app.core.config import settings
+
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 config = context.config
+
+# The URL comes from the same settings the application uses, so credentials stay
+# in app/.env. alembic.ini used to carry a production password in the clear.
+config.set_main_option("sqlalchemy.url", settings.sync_database_url)
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# add your model's MetaData object here
-# for 'autogenerate' support
-# from myapp import mymodel
-# target_metadata = mymodel.Base.metadata
+# Autogenerate needs the models' metadata here. It is still None because there
+# is no baseline revision yet — `migrations/versions/` does not exist and the
+# schema is created by `check_tables()` at startup. Establishing a baseline is
+# separate work: it needs a stamp on every existing deployment before
+# `metadata.create_all` can be removed, and the two functional indexes on
+# `documents` need hand-editing into the first revision.
 target_metadata = None
 
 # other values from the config, defined by the needs of env.py,

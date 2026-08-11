@@ -13,6 +13,6 @@ class SharedDocument(Base):
     token        = Column(String, unique=True, nullable=False)
     filename     = Column(String, nullable=False)  # ← Добавь это
     created_at   = Column(DateTime(timezone=True),
-                          default=datetime.now(timezone.utc),
+                          default=lambda: datetime.now(timezone.utc),
                           nullable=False)
     expires_at   = Column(DateTime(timezone=True))

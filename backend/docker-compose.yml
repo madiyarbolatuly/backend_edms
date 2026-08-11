@@ -13,14 +13,12 @@ services:
       LANG: C.UTF-8
       LC_ALL: C.UTF-8
       LOCAL_STORAGE_PATH: /usr/src/app/uploads/1/1
-    command: >
-     sh -c "
-        for d in /usr/src/app/uploads/1/1/Projects-*; do
-          name=$(basename \"$d\")
-          ln -sfn \"$d\" \"/usr/src/app/uploads/$name\"
-        done
-        uvicorn app.main:app --host 0.0.0.0 --port 8000
-      "  
+    # The symlink loop that used to sit here was a workaround for the duplicated
+    # storage prefix (paths stored as `1/1/…` under a LOCAL_STORAGE_PATH that
+    # already ended in `/1/1`). It linked into /usr/src/app/uploads, which is
+    # *outside* LOCAL_STORAGE_PATH, so nothing ever read through it. The prefix
+    # is fixed at the source now — see app/scan/paths.py.
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
       
   scanner:
     build: .
@@ -32,7 +30,10 @@ services:
       POSTGRES_HOST: postgres
       # Scan the whole tenant/department root so all folders (Projects-2024/2025/2026, etc.) become accessible.
       ROOT_SCAN: /usr/src/app/uploads/1/1
-      ROOT_PREFIX: "1/1"
+      # Empty: ROOT_SCAN *is* LOCAL_STORAGE_PATH, so stored paths are relative
+      # to it. Setting this to "1/1" while LOCAL_STORAGE_PATH already ended in
+      # /1/1 is what made every file resolve to uploads/1/1/1/1/… and 404.
+      ROOT_PREFIX: ""
       TENANT_ID: "1"
       DEPARTMENT_ID: "1"
       OWNER_ID: "c17ba46f-b4b0-473c-ac93-cb10cfed0f7e"

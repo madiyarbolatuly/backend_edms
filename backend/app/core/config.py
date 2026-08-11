@@ -67,6 +67,12 @@ class GlobalConfig(BaseSettings):
     def UPLOADS_DIR(self) -> str:
         return self.upload_dir
 
+    # How long a share lasts when the sharer does not pick a date. One value for
+    # both kinds of share — a per-recipient grant and a public link — so they
+    # cannot drift apart. Public links used to have no expiry at all, and
+    # recipient grants defaulted to a week.
+    share_expiry_days: int = int(os.environ.get("SHARE_EXPIRY_DAYS", "3"))
+
     access_token_expire_min: int = os.environ.get("ACCESS_TOKEN_EXPIRE_MIN")
     refresh_token_expire_min: int = os.environ.get("REFRESH_TOKEN_EXPIRE_MIN")
     algorithm: str = os.environ.get("ALGORITHM")

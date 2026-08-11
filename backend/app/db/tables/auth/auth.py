@@ -30,7 +30,7 @@ class User(Base):
     is_active      = Column(Boolean, default=True, nullable=False)
     created_at     = Column(DateTime(timezone=True),
                             nullable=False,
-                            default=datetime.now(timezone.utc))
+                            default=lambda: datetime.now(timezone.utc))
 
     documents      = relationship("Document", back_populates="owner")
 

@@ -33,9 +33,11 @@ async def create_folder(
     summary="List items in a folder",
 )
 async def list_folder_children(
-    parent_id: UUID,
+    # `Document.id` is an Integer and the frontend calls this with a number, so
+    # the UUID annotation made every real request a 422.
+    parent_id: int,
     recursive: bool = False,
     user: TokenData = Depends(get_current_user),
     repo: MetadataRepository = Depends(get_repository(MetadataRepository)),
 ):
-    return await repo.list_children(owner_id=user.id, parent_id=parent_id, recursive=recursive)
+    return await repo.list_children(user=user, parent_id=parent_id, recursive=recursive)

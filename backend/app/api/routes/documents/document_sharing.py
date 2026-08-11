@@ -9,6 +9,7 @@ from app.api.dependencies.auth_utils import get_current_user
 from app.api.dependencies.repositories import get_repository
 from app.core.config import settings
 from app.core.exceptions import http_404
+from app.core.utils import default_share_expiry
 from app.db.repositories.documents.documents_metadata import MetadataRepository
 from app.db.repositories.documents.document_sharing import SharedDocumentRepository
 from app.schemas.auth.bands import TokenData
@@ -58,7 +59,10 @@ async def create_share_link(
         token=secrets.token_urlsafe(32),
         document_id=item.id,
         created_by=user.id,
-        expires_at=body.expires_at if body else None,
+        # A link with no chosen date expires after `settings.share_expiry_days`.
+        # It used to be stored as NULL, which this table reads as "never" — so
+        # every public link ever created is still live.
+        expires_at=(body.expires_at if body and body.expires_at else default_share_expiry()),
     )
     session.add(link)
     await session.commit()
@@ -123,11 +127,18 @@ async def share_link_document_by_id(
         doc_ids = [item.id]
 
     # 3) сохраняем в shared_documents
+    # Every recipient is resolved before anything is written. Interleaved, an
+    # unknown recipient part-way down the list aborted the request with the
+    # earlier recipients already shared — and `create_share_records` committed
+    # per call, so there was nothing to roll back.
+    recipients = []
     for recipient_key in share_request.share_to or []:
         recipient = await users_repo.get_by_email_or_username(recipient_key)
         if not recipient:
             raise HTTPException(422, f"User {recipient_key} not found")
+        recipients.append(recipient)
 
+    for recipient in recipients:
         await share_repo.create_share_records(
             owner_id=user.id,
             doc_ids=doc_ids,
@@ -177,13 +188,17 @@ async def share_link_document(
     else:
         doc_ids = [item.id]
 
-    # 3) сохраняем в shared_documents
-    for recipient_key in share_request.share_to:
+    # 3) сохраняем в shared_documents — сначала проверяем всех получателей,
+    # потом пишем (см. share_link_document_by_id). `share_to` необязателен,
+    # поэтому итерируем по `or []`: без этого пустое тело давало TypeError.
+    recipients = []
+    for recipient_key in share_request.share_to or []:
         recipient = await users_repo.get_by_email_or_username(recipient_key)
         if not recipient:
             raise HTTPException(422, f"User {recipient_key} not found")
+        recipients.append(recipient)
 
-        # 3) save record for each recipient
+    for recipient in recipients:
         await share_repo.create_share_records(
             owner_id=user.id,
             doc_ids=doc_ids,

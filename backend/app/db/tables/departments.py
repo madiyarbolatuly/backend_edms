@@ -12,4 +12,4 @@ class Department(Base):
     name        = Column(String, nullable=False)
     created_at  = Column(DateTime(timezone=True),
                          nullable=False,
-                         default=datetime.now(timezone.utc))
+                         default=lambda: datetime.now(timezone.utc))

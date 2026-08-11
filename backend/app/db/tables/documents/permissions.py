@@ -28,7 +28,7 @@ class Permission(Base):
     access_level = Column(SQLEnum(AccessLevel), nullable=False)
     created_at = Column(
         DateTime(timezone=True),
-        default=datetime.now(timezone.utc),
+        default=lambda: datetime.now(timezone.utc),
         nullable=False,
     )
 

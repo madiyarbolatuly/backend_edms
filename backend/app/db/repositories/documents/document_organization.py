@@ -1,109 +1,80 @@
-from typing import Any, Dict, List, Union
+from typing import List
 
 from app.api.dependencies.constants import SUPPORTED_FILE_TYPES
 from app.schemas.documents.documents_metadata import DocumentMetadataRead
 
 
+def _split(csv: str) -> List[str]:
+    """"a, b ,c" -> ["a", "b", "c"], dropping empties."""
+    return [part.strip() for part in csv.split(",") if part.strip()]
+
+
 class DocumentOrgRepository:
     """
-    Repository for managing document organization.
+    In-memory filtering over a page of documents.
+
+    Every predicate here used to be written as
+    `result.extend(doc for tag in tags if ...)` where `doc` was a dict — which
+    extends the list with the dict's *keys*, so a filtered search returned a
+    list of field names rather than documents. The filters are now plain
+    predicates and `search_doc` applies them as an AND, which is what the
+    endpoint's query parameters read like.
     """
 
     def __init__(self): ...
 
     @staticmethod
-    async def _search_tags(
-        docs: List[DocumentMetadataRead], tags: List[str]
-    ) -> List[Dict[str, str]]:
-
-        result = []
-        for doc in docs:
-            doc = doc.__dict__
-            result.extend(
-                doc
-                for tag in tags
-                if doc["tags"] and "".join(tag.split()) in doc["tags"]
-            )
-
-        return result or None
+    def _has_tag(doc: DocumentMetadataRead, tags: List[str]) -> bool:
+        return bool(doc.tags) and any(tag in doc.tags for tag in tags)
 
     @staticmethod
-    async def _search_category(
-        docs: List[DocumentMetadataRead], categories: List[str]
-    ) -> List[Dict[str, str]]:
-
-        result = []
-        for doc in docs:
-            doc = doc.__dict__
-            result.extend(
-                doc
-                for category in categories
-                if doc["categories"] and "".join(category.split()) in doc["categories"]
-            )
-
-        return result or None
+    def _is_file_type(doc: DocumentMetadataRead, extensions: List[str]) -> bool:
+        """
+        `file_type` holds a MIME type for uploads and the literal "folder" for
+        folders, while the query parameter is an extension ("pdf,docx").
+        """
+        if not doc.file_type:
+            return False
+        wanted_mimes = {
+            mime for mime, ext in SUPPORTED_FILE_TYPES.items() if ext in extensions
+        }
+        return doc.file_type in wanted_mimes or doc.file_type in extensions
 
     @staticmethod
-    async def _search_file_type(
-        docs: List[DocumentMetadataRead], file_types: List[str]
-    ) -> List[Dict[str, str]]:
-
-        result = []
-        for doc in docs:
-            doc = doc.__dict__
-            for ftype in file_types:
-                ftype = "".join(ftype.split())
-                result.extend(
-                    doc
-                    for key, val in SUPPORTED_FILE_TYPES.items()
-                    if val == ftype and key == doc["file_type"]
-                )
-
-        return result or None
-
-    @staticmethod
-    async def _search_by_status(
-        docs: List[DocumentMetadataRead], status: List[str]
-    ) -> List[Dict[str, str]]:
-
-        result = []
-        for doc in docs:
-            doc = doc.__dict__
-            result.extend(
-                doc for stat in status if str(doc["status"]) == f"DocStatus.{stat}"
-            )
-
-        return result or None
+    def _has_status(doc: DocumentMetadataRead, statuses: List[str]) -> bool:
+        # `status` is a str-subclassed enum, so compare against its value rather
+        # than the "DocStatus.public" repr the old code matched on.
+        current = getattr(doc.status, "value", doc.status)
+        return str(current) in statuses
 
     async def search_doc(
         self,
         docs: List[DocumentMetadataRead],
-        tags: str,
-        categories: str,
-        file_types: str,
-        status: str,
-    ) -> Union[List[List[Dict[str, Any]]], None]:
+        tags: str = None,
+        categories: str = None,
+        file_types: str = None,
+        status: str = None,
+    ) -> List[DocumentMetadataRead]:
+        """
+        Narrow `docs` by every filter that was supplied.
 
-        results = []
+        Returns a flat list in the same shape as the unfiltered branch of the
+        endpoint, so a caller does not have to care whether filters were used.
+        `categories` is accepted for signature compatibility and must be empty —
+        the read schema has no such field, so the route rejects it up front.
+        """
+        result = list(docs)
 
         if tags:
-            tags = tags.split(",")
-            results.append(await self._search_tags(docs=docs, tags=tags))
-
-        if categories:
-            categories = categories.split(",")
-            results.append(
-                await self._search_category(docs=docs, categories=categories)
-            )
+            wanted = _split(tags)
+            result = [d for d in result if self._has_tag(d, wanted)]
 
         if file_types:
-            file_type = file_types.split(",")
-            results.append(
-                await self._search_file_type(docs=docs, file_types=file_type)
-            )
+            wanted = _split(file_types)
+            result = [d for d in result if self._is_file_type(d, wanted)]
 
         if status:
-            _status = status.split(",")
-            results.append(await self._search_by_status(docs=docs, status=_status))
+            wanted = _split(status)
+            result = [d for d in result if self._has_status(d, wanted)]
 
-        return results
+        return result

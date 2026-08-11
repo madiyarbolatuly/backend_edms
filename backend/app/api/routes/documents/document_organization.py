@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, status, Query
 
 from app.api.dependencies.repositories import get_repository
 from app.api.dependencies.auth_utils import get_current_user
+from app.core.exceptions import http_400
 from app.db.repositories.documents.documents_metadata import MetadataRepository
 from app.db.repositories.documents.document_organization import DocumentOrgRepository
 from app.schemas.auth.bands import TokenData
@@ -47,16 +48,26 @@ async def search_document(
         List[DocumentMetadataRead] or List[Dict[str, Any]]: The list of matching documents.
     """
 
-    doc_list = await repository_metadata.doc_list(
+    if category:
+        # No `categories` column and no such field on DocumentMetadataRead, so
+        # accepting the parameter and quietly ignoring it would be a lie.
+        raise http_400(msg="Фильтр по категории не поддерживается")
+
+    page = await repository_metadata.doc_list(
         limit=limit, offset=offset, owner=user
     )
-    doc_list = doc_list[f"documents of {user.username}"]
-    if tag is None and category is None and file_types is None and doc_status is None:
+    # `doc_list` returns {"documents": [...], "total_count": n}. This read the
+    # key `f"documents of {user.username}"`, which has not existed for a long
+    # time — so every request to this endpoint raised KeyError and 500'd.
+    doc_list = page["documents"]
+
+    if tag is None and file_types is None and doc_status is None:
         return doc_list
 
     return await repository.search_doc(
         docs=doc_list,
         tags=tag,
+        categories=None,
         file_types=file_types,
         status=doc_status,
     )

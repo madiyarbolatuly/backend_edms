@@ -251,10 +251,11 @@ class DocumentRepository(BaseRepository[Document]):
             with zipfile.ZipFile(zippath, "w", zipfile.ZIP_DEFLATED) as zipf:
 
                 async def add_recursive(folder_id: int, prefix: str = ""):
-                    # NOTE: if your list_children filters by owner only and that’s a problem,
-                    # add a tenant/department-scoped variant and call it here.
+                    # `list_children` is scoped to `user`'s tenant and department,
+                    # so the ZIP cannot reach outside them — which is what the
+                    # note that used to sit here was asking for.
                     kids = await metadata_repo.list_children(
-                        owner_id=user.id, parent_id=folder_id
+                        user=user, parent_id=folder_id
                     )
                     for child in kids:
                         if child.file_type == "folder":

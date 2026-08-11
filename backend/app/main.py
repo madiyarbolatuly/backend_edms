@@ -51,17 +51,38 @@ app.include_router(router, prefix=settings.api_prefix)
 app.include_router(onlyoffice_router)
 
 
+# Served from this package, not the working directory. The path also needs its
+# leading slash — request paths always start with one, so "favicon.ico" could
+# never match — and the route has to be registered *before* the frontend mount
+# below, because a mount at "/" matches everything that reaches it.
+FAVICON_PATH = pathlib.Path(__file__).parent / "favicon.ico"
 
-frontend_build = pathlib.Path(__file__).parent / "frontend" / "dist"
-if frontend_build.exists():
-    app.mount(
-        "/",
-        StaticFiles(directory=str(frontend_build), html=True),
-        name="frontend",
-        title=settings.title,
-    )
 
-FAVICON_PATH = "favicon.ico"
-@app.get(FAVICON_PATH, include_in_schema=False)
+@app.get("/favicon.ico", include_in_schema=False)
 async def favicon():
+    if not FAVICON_PATH.exists():
+        raise HTTPException(status_code=404, detail="No favicon")
     return FileResponse(FAVICON_PATH)
+
+
+def mount_frontend(application: FastAPI, build_dir: pathlib.Path) -> bool:
+    """
+    Serve the built SPA at the root, if there is one.
+
+    Kept as a function so it can be exercised by a test. This previously passed
+    `title=` to `mount()`, whose signature is `(path, app, name)` — a TypeError
+    raised at import, and only on a deployment that actually has a build, since
+    the call sits behind an existence check. It could not be caught anywhere the
+    frontend is served by something else.
+    """
+    if not build_dir.exists():
+        return False
+    application.mount(
+        "/",
+        StaticFiles(directory=str(build_dir), html=True),
+        name="frontend",
+    )
+    return True
+
+
+mount_frontend(app, pathlib.Path(__file__).parent / "frontend" / "dist")

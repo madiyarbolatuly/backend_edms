@@ -23,5 +23,5 @@ class Notify(Base):
     type = Column(PGEnum(NotifyEnum, name="notifyenum"), nullable=False)
     status       = Column(Enum(NotifyEnum), default=NotifyEnum.unread)
     created_at   = Column(DateTime(timezone=True),
-                          default=datetime.now(timezone.utc),
+                          default=lambda: datetime.now(timezone.utc),
                           nullable=False)

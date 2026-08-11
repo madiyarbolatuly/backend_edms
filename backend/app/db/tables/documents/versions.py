@@ -11,7 +11,7 @@ class DocumentVersion(Base):
     version_number  = Column(Integer, nullable=False)
     file_path       = Column(String, nullable=False)
     created_at      = Column(DateTime(timezone=True),
-                             default=datetime.now(timezone.utc),
+                             default=lambda: datetime.now(timezone.utc),
                              nullable=False)
 
     __table_args__  = (UniqueConstraint("document_id", "version_number",

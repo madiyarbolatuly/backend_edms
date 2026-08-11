@@ -4,11 +4,13 @@ from datetime import datetime, timezone
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import IntegrityError
+from app.core.config import settings
 from app.db.tables.documents.documents import Document
 from app.db.tables.base_class import DocStatus
 
-# Database configuration
-DATABASE_URL = "postgresql://postgres:GQgroup12@localhost:5432/docflow_db"
+# Database configuration. Read from the environment like the rest of the app —
+# this used to hardcode a production password in the clear.
+DATABASE_URL = os.environ.get("DATABASE_URL") or settings.sync_database_url
 engine = create_engine(DATABASE_URL, echo=True)  # echo=True = покажет SQL-запросы
 SessionLocal = sessionmaker(bind=engine)
 session = SessionLocal()

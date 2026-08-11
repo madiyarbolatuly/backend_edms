@@ -23,6 +23,10 @@ from pathlib import Path
 import psycopg
 from psycopg.errors import OperationalError, UniqueViolation
 
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from app.scan.paths import normalise_prefix, rel_db_path  # noqa: E402
+
 # ── DB config (env-overridable)
 DB_NAME   = os.environ.get("POSTGRES_DB", "docflow_db")
 USER      = os.environ.get("POSTGRES_USER", "postgres")
@@ -37,7 +41,14 @@ OWNER_ID      = os.environ.get("OWNER_ID", "c17ba46f-b4b0-473c-ac93-cb10cfed0f7e
 # ── Scan roots
 ROOT_SCAN_RAW = os.environ.get("ROOT_SCAN", "/mnt/Projects-2025").strip()
 ROOT_SCAN     = str(Path(ROOT_SCAN_RAW).resolve())
-ROOT_PREFIX   = os.environ.get("ROOT_PREFIX") or Path(ROOT_SCAN).name
+# Where the scan root sits *inside* LOCAL_STORAGE_PATH. Empty — the default —
+# means the scan root IS the storage root, which is the usual case.
+#
+# This used to default to `Path(ROOT_SCAN).name`, and compose set it to "1/1"
+# while LOCAL_STORAGE_PATH already ended in `/1/1`. Every path was stored as
+# `1/1/<rel>` and resolved to `uploads/1/1/1/1/<rel>`, so downloads and previews
+# 404'd. See app/scan/repair_storage_prefix.py for repairing rows written that way.
+ROOT_PREFIX   = normalise_prefix(os.environ.get("ROOT_PREFIX"))
 
 # ── Hashing
 HASH_FILES  = os.environ.get("HASH_FILES", "true").lower() == "true"
@@ -76,9 +87,8 @@ def get_file_hash(path: Path):
     return h.hexdigest()
 
 def norm_rel_db_path(abs_path: Path) -> str:
-    rel = abs_path.relative_to(ROOT_SCAN)
-    db_path = f"{ROOT_PREFIX}/{str(rel).replace('\\', '/')}"
-    return db_path.replace("//", "/")
+    """See `app/scan/paths.py` — kept as a thin alias so call sites read the same."""
+    return rel_db_path(abs_path, ROOT_SCAN, ROOT_PREFIX)
 
 def _insert_base_params(file_type, title, name, status, file_path, parent_id, file_hash, size):
     return (
@@ -165,7 +175,8 @@ def should_skip_dir(name: str) -> bool:
     n = name.strip()
     return n in EXCLUDE_DIRS or n.startswith(".Trash") or n == "" or n == "lost+found"
 
-def process_directory(cur, parent_id: int, fs_path: Path, seen_paths: set[str]):
+def process_directory(cur, parent_id: int | None, fs_path: Path, seen_paths: set[str]):
+    """`parent_id=None` is the top level — the storage root has no document row."""
     for entry in fs_path.iterdir():
         name = entry.name
 
@@ -208,49 +219,44 @@ def process_directory(cur, parent_id: int, fs_path: Path, seen_paths: set[str]):
             file_hash=file_hash, size=file_size
         )
 
-def get_or_create_root(cur) -> int:
-    """
-    Reuse existing root row if present (parent_id IS NULL).
+# NOTE: there is deliberately no `get_or_create_root` any more.
+#
+# The scanner used to synthesise a top-level folder to hang everything off,
+# titled `Path(ROOT_SCAN).name` — with ROOT_SCAN=/usr/src/app/uploads/1/1 that is
+# a folder literally called "1" — whose file_path was ROOT_PREFIX, a storage
+# detail leaking into the document tree. It also pushed every real folder down a
+# level, which is why the frontend grew a "containers and their children" model
+# to compensate. The directories inside ROOT_SCAN are now top-level documents,
+# which is what the navigation shows.
 
-    The row is *stored* under ROOT_PREFIX (so file_path keeps matching the
-    filesystem), but it is *displayed* using the directory's own name — a root
-    titled "1/1" is meaningless in the UI, and top-level folders are surfaced
-    as projects by the frontend.
-    """
-    root_title = Path(ROOT_SCAN).name or ROOT_PREFIX
-
-    cur.execute(
-        """
-        SELECT id FROM documents
-        WHERE tenant_id=%s AND department_id=%s
-          AND file_type='folder' AND title=%s AND parent_id IS NULL
-        LIMIT 1;
-        """,
-        (TENANT_ID, DEPARTMENT_ID, root_title),
-    )
-    row = cur.fetchone()
-    if row:
-        return row[0]
-    return upsert_document(
-        cur,
-        file_type="folder",
-        title=root_title, name=root_title, status="public",
-        file_path=f"{ROOT_PREFIX}", parent_id=None, file_hash=None, size=None
-    )
 
 def load_existing_paths(cur) -> set[str]:
     """
     All paths in DB for this tenant/department under this ROOT_PREFIX.
+
+    With an empty prefix — the normal case — that is every row for the
+    tenant/department. Filtering on `file_path = '' OR LIKE '/%'` would match
+    nothing and silently disable `delete_stale_paths`.
     """
-    cur.execute(
-        """
-        SELECT file_path
-        FROM documents
-        WHERE tenant_id=%s AND department_id=%s
-          AND (file_path = %s OR file_path LIKE %s)
-        """,
-        (TENANT_ID, DEPARTMENT_ID, ROOT_PREFIX, f"{ROOT_PREFIX}/%"),
-    )
+    if ROOT_PREFIX:
+        cur.execute(
+            """
+            SELECT file_path
+            FROM documents
+            WHERE tenant_id=%s AND department_id=%s
+              AND (file_path = %s OR file_path LIKE %s)
+            """,
+            (TENANT_ID, DEPARTMENT_ID, ROOT_PREFIX, f"{ROOT_PREFIX}/%"),
+        )
+    else:
+        cur.execute(
+            """
+            SELECT file_path
+            FROM documents
+            WHERE tenant_id=%s AND department_id=%s
+            """,
+            (TENANT_ID, DEPARTMENT_ID),
+        )
     return {row[0] for row in cur.fetchall()}
 
 def delete_stale_paths(cur, existing_paths: set[str], seen_paths: set[str]):
@@ -362,11 +368,10 @@ def main():
 
             seen_paths: set[str] = set()
 
-            root_id = get_or_create_root(cur)
-            # корневая папка тоже часть дерева
-            seen_paths.add(ROOT_PREFIX)
-
-            process_directory(cur, root_id, root_dir, seen_paths)
+            # No synthetic container: the directories inside ROOT_SCAN become
+            # top-level documents, so the navigation starts where the storage
+            # does.
+            process_directory(cur, None, root_dir, seen_paths)
 
             # удалить всё, чего больше нет в файловой системе,
             # но не трогаем shared и не ломаем parent_id FK
@@ -374,7 +379,8 @@ def main():
 
         conn.commit()
 
-    print(f"✔ Indexed {ROOT_SCAN} as '{ROOT_PREFIX}' (no duplicates; junk skipped)")
+    scope = f"'{ROOT_PREFIX}'" if ROOT_PREFIX else "the storage root"
+    print(f"✔ Indexed {ROOT_SCAN} as {scope} (no duplicates; junk skipped)")
 
 if __name__ == "__main__":
     main()

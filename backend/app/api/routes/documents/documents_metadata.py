@@ -71,7 +71,7 @@ async def upload_document_metadata(
     name="get_documents_metadata",
 )
 async def get_documents_metadata(
-    limit: int = Query(default=100, le=100000, ge=1),   
+    limit: int = Query(default=100, le=100000, ge=1),
     offset: int = Query(default=0, ge=0),
     parent_id: Optional[int] = Query(default=None, description="Folder id; null = root"),
     recursive: bool = Query(default=False),
@@ -79,13 +79,33 @@ async def get_documents_metadata(
     user: TokenData = Depends(get_current_user),
     only_folders: bool = Query(default=False),   # keep for the tree calls
     files_only: bool = Query(default=False),
-
+    root_id: Optional[int] = Query(
+        default=None,
+        description="Restrict the listing to this folder's subtree (the active project).",
+    ),
+    search: Optional[str] = Query(
+        default=None,
+        description="Case-insensitive substring match on the file name.",
+    ),
+    sort_by: Optional[str] = Query(
+        default="name",
+        description="One of: name, size, created_at, file_type. Folders always sort first.",
+    ),
+    sort_dir: str = Query(default="asc", pattern="^(asc|desc)$"),
 
 ) -> Dict[str, Union[List[DocumentMetadataRead], int]]:
     return await repository.doc_list(
-        owner=user, parent_id=parent_id, recursive=recursive, limit=limit, offset=offset, files_only=files_only,        only_folders=only_folders,
-          # <— pass through
-
+        owner=user,
+        parent_id=parent_id,
+        recursive=recursive,
+        limit=limit,
+        offset=offset,
+        files_only=files_only,
+        only_folders=only_folders,
+        root_id=root_id,
+        search=search,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
     )
 
 

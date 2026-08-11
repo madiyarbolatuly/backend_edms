@@ -20,6 +20,11 @@ Mako==1.3.0
 MarkupSafe==2.1.3
 packaging==23.2
 passlib~=1.7.4
+# passlib 1.7.4 reads bcrypt's version through `bcrypt.__about__`, which was
+# removed in bcrypt 4.1. Without this pin a fresh install resolves bcrypt 5.x
+# and every password hash raises "password cannot be longer than 72 bytes" —
+# signup and login both fail. Lift the ceiling only together with passlib.
+bcrypt<4.1
 pluggy==1.3.0
 psycopg2==2.9.9
 pyasn1==0.5.1

@@ -26,6 +26,10 @@ from fastapi import UploadFile
 from app.schemas.documents.documents_metadata import FolderCreate, FolderRead
 from app.db.tables.documents.permissions import Permission, AccessLevel
 from app.db.tables.documents.permissions import doc_user_access
+# Everything that carries a FK to documents.id — a permanent delete has to clear
+# these first, since the ORM-level cascade does not apply to Core DELETE.
+from app.db.tables.documents.share_link import ShareLink
+from app.db.tables.documents.shared import SharedDocument
 from enum import Enum
 from app.core.config import settings
 from app.db.models import logger
@@ -134,6 +138,30 @@ class MetadataRepository(BaseRepository[Document]):
             return document_patch
         return document_patch.model_dump(exclude_unset=True)
 
+    # Fields a client must never set through a patch, whatever the schema
+    # happens to accept. Everything else the table has is fair game, so a column
+    # added to `Document` later becomes patchable without anyone remembering to
+    # update a list here.
+    _PROTECTED_COLUMNS = frozenset({
+        "id", "tenant_id", "department_id", "owner_id",
+        "document_number", "created_at", "file_path", "file_hash",
+    })
+
+    @classmethod
+    def _writable_changes(cls, changes: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Narrow a patch to fields that are actually columns on `Document`.
+
+        `DocumentMetadataPatch` accepts `tags`, `categories` and `access_to`,
+        none of which the table has. Passing them to `update().values()` raised
+        a CompileError that `_execute_update` reported as "Ошибка при обновлении
+        документа" — so renaming a document while sending tags looked like a
+        name conflict. `access_to` is consumed separately by
+        `_update_access_and_permission` before this runs.
+        """
+        allowed = set(Document.__table__.columns.keys()) - cls._PROTECTED_COLUMNS
+        return {k: v for k, v in changes.items() if k in allowed}
+
     async def _execute_update(
         self, db_document: Document | Dict[str, Any], changes: Dict[str, Any]
     ) -> Document:
@@ -175,22 +203,45 @@ class MetadataRepository(BaseRepository[Document]):
         
         
     async def move_document(self, document_id: int, new_parent_id: int | None, user: TokenData):
-        doc = await self.session.get(Document, document_id)
+        """
+        Relocate a document or folder, on disk and in the database.
+
+        This used to look for the source at
+        `upload_dir/<tenant>/<department>/<file_path>`, while uploads write to
+        `upload_dir/<file_path>` — `settings.upload_dir` *is* the
+        tenant/department root. The source therefore never existed, the physical
+        move was skipped by the `if old_abs.exists()` guard, and `file_path` was
+        rewritten anyway. The row ended up pointing at a path with no file, the
+        bytes stayed where nothing would look for them, and the old path — the
+        only way back to them — was gone. Silent, unrecoverable data loss on
+        every move.
+        """
+        doc = await self._get_scoped(document_id, user)
         if not doc:
+            # Scoped, not a bare primary-key fetch: an admin of one tenant could
+            # otherwise move another tenant's documents around.
             raise ValueError("Документ не найден")
 
         # permissions
         if doc.owner_id != user.id and user.role != "admin":
             raise ValueError("Нет прав")
 
-        # target parent (optional)
-        if new_parent_id:
-            parent = await self.session.get(Document, new_parent_id)
-            if not parent or parent.file_type != "folder":
-                raise ValueError("Целевая папка не найдена")
+        if new_parent_id is not None and int(new_parent_id) == int(document_id):
+            raise ValueError("Нельзя переместить элемент в самого себя")
 
-            # cannot move into its descendant
-            if parent.file_path.startswith(f"{doc.file_path}/"):
+        # The subtree, by id. Used both to reject a move into your own
+        # descendant and to re-anchor their paths below — the previous check
+        # compared `file_path` strings, which is the very field this function
+        # had been corrupting.
+        descendants = await self._list_descendants_raw(doc)
+        descendant_ids = {d.id for d in descendants}
+
+        if new_parent_id:
+            # Module-level helper taking `self` explicitly, not a method.
+            parent = await _get_base_parent(self, new_parent_id, user)
+            if not parent:
+                raise ValueError("Целевая папка не найдена")
+            if parent.id in descendant_ids:
                 raise ValueError("Нельзя переместить элемент в собственную подпапку")
 
             new_rel = f"{parent.file_path}/{doc.name}" if parent.file_path else doc.name
@@ -198,37 +249,75 @@ class MetadataRepository(BaseRepository[Document]):
             # move to root
             new_rel = doc.name
 
-        # compute absolute paths WITHOUT requiring they exist
-        uploads_root = Path(settings.upload_dir) / str(user.tenant_id) / str(user.department_id)
         old_rel = doc.file_path
+        if new_rel == old_rel:
+            return doc
+
+        # `settings.upload_dir` already points at the tenant/department root —
+        # see `_stream_and_hash`, which is what actually writes these files.
+        uploads_root = Path(settings.upload_dir)
         old_abs = uploads_root / old_rel
         new_abs = uploads_root / new_rel
 
-        # ensure destination parent exists, then move if source exists
-        new_abs.parent.mkdir(parents=True, exist_ok=True)  # create .../PepsiCO/2.Рабочая папка
-        if old_abs.exists():
-            shutil.move(str(old_abs), str(new_abs))  # moves files or directories
-        # If your storage may not have a physical directory (e.g., metadata only), skip silently.
+        if new_abs.exists():
+            # `shutil.move` onto an existing directory moves *into* it, which
+            # would nest the item one level below where the database says it is.
+            raise ValueError("Элемент с таким именем уже существует в целевой папке")
 
-        # update DB: parent_id + file_path
+        source_exists = old_abs.exists()
+        if not source_exists and doc.file_type != "folder":
+            # A folder legitimately has no directory of its own — `create_folder`
+            # only inserts a row. A *file* without its bytes is an inconsistency,
+            # and rewriting its path regardless is what caused this defect.
+            raise FileNotFoundError(
+                f"Файл отсутствует в хранилище: {old_rel}. Перемещение отменено."
+            )
+
+        # Apply the database changes and flush *before* touching the disk, so a
+        # uniq_file / uq_title_parent violation surfaces while the filesystem is
+        # still untouched.
         doc.parent_id = new_parent_id
         doc.file_path = new_rel
 
-        # update descendants’ file_path
-        children = (
-            await self.session.execute(
-                select(Document).where(
-                    Document.tenant_id == user.tenant_id,
-                    Document.department_id == user.department_id,
-                    Document.file_path.like(f"{old_rel}/%")
+        old_prefix = old_rel.rstrip("/") + "/"
+        for child in descendants:
+            if child.file_path and child.file_path.startswith(old_prefix):
+                # Re-anchored by slicing rather than `str.replace`, which is not
+                # tied to the start of the string.
+                child.file_path = new_rel + "/" + child.file_path[len(old_prefix):]
+            else:
+                # Already inconsistent — most likely orphaned by this very bug.
+                # Inventing a path for it would compound the damage.
+                logger.warning(
+                    "move_document: descendant %s has path %r outside %r; left unchanged",
+                    child.id, child.file_path, old_rel,
                 )
-            )
-        ).scalars().all()
 
-        for child in children:
-            child.file_path = child.file_path.replace(old_rel, new_rel, 1)
+        await self.session.flush()
 
-        await self.session.commit()
+        moved = False
+        if source_exists:
+            new_abs.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(old_abs), str(new_abs))
+            moved = True
+
+        try:
+            await self.session.commit()
+        except Exception:
+            # Best effort, not a transaction: a filesystem and a database cannot
+            # be made atomic here. Put the file back so the two still agree, and
+            # record it if even that fails.
+            if moved:
+                try:
+                    shutil.move(str(new_abs), str(old_abs))
+                except Exception:
+                    logger.exception(
+                        "move_document: commit failed and %s could not be restored "
+                        "to %s — the row and the file now disagree",
+                        new_abs, old_abs,
+                    )
+            raise
+
         await self.session.refresh(doc)
         return doc
 
@@ -314,8 +403,12 @@ class MetadataRepository(BaseRepository[Document]):
                 Document.parent_id == root_id,
                 Document.tenant_id == tenant_id,
                 Document.department_id == department_id,
+                # Trashed rows were included, so deleted files showed up in
+                # folder listings and were written into the folder download ZIP.
+                Document.status != DocStatus.deleted,
+                Document.deleted_at.is_(None),
             )
-            .order_by(Document.file_type.desc(), Document.name.asc())
+            .order_by(Document.file_type.desc(), Document.name.asc(), Document.id.asc())
         )
         return result.scalars().all()
         
@@ -361,40 +454,97 @@ class MetadataRepository(BaseRepository[Document]):
     # Публичный метод (Pydantic схемы)
     # ───────────────────────────────
     async def list_children(
-        self, owner_id: str, parent_id: Optional[int] = None, recursive: bool = False
+        self, user: TokenData, parent_id: Optional[int] = None, recursive: bool = False
     ) -> list[DocumentMetadataRead]:
         """
-        - If recursive=False: list direct children under parent_id (same tenant/department).
-        - If recursive=True: list the full subtree (excluding the root).
-        NOTE: owner_id kept for permission checks; not used for filtering here.
+        List what is inside a folder, scoped to the caller.
+
+        - `recursive=False`: the folder's direct children.
+        - `recursive=True`: the whole subtree, excluding the root.
+
+        The scope comes from `user`, never from the row being asked about. This
+        previously read `getattr(self, "tenant_id", None)` — an attribute
+        `__init__` never sets — and so always fell through to taking the tenant
+        and department *from the requested folder*. `GET /v2/children/{id}` was
+        therefore an enumeration oracle: any authenticated user could walk any
+        tenant's library by incrementing an integer, and the folder-download ZIP
+        inherited the same hole.
+
+        A folder outside the caller's scope returns `[]` rather than 404, so the
+        response cannot be used to tell "does not exist" from "not yours".
         """
         if parent_id is None:
             return []
 
-        # Prefer tenant/department from repo context (e.g., set at construction from JWT).
-        tenant_id = getattr(self, "tenant_id", None)
-        department_id = getattr(self, "department_id", None)
-
-        # If not set, infer them from the parent/root document.
-        root_doc = await self.session.get(Document, parent_id)
-        if not root_doc:
+        root_doc = await self._get_scoped(parent_id, user)
+        if root_doc is None:
             return []
-
-        if tenant_id is None or department_id is None:
-            tenant_id = root_doc.tenant_id
-            department_id = root_doc.department_id
 
         if recursive:
             docs = await self._list_descendants_raw(root_doc)
+            # `_list_descendants_raw` deliberately includes trashed rows — its
+            # other callers (delete, permanent delete) need them. A listing does
+            # not.
+            docs = [
+                d for d in docs
+                if d.status != DocStatus.deleted and d.deleted_at is None
+            ]
         else:
             docs = await self._list_children_raw(
                 root_id=parent_id,
-                tenant_id=int(tenant_id),
-                department_id=int(department_id),
+                tenant_id=user.tenant_id,
+                department_id=user.department_id,
             )
 
-        # Pydantic v1 style; if you're on v2, use model_validate with from_attributes=True
-        return [DocumentMetadataRead.from_orm(d) for d in docs]
+        return [
+            DocumentMetadataRead.model_validate(d, from_attributes=True) for d in docs
+        ]
+
+    async def get_document_for_callback(self, doc_id: int) -> Optional[Document]:
+        """
+        Look up a document for the OnlyOffice save callback.
+
+        Unscoped by tenant on purpose: the callback comes from Document Server,
+        not from a user session, so there is no `TokenData` to scope by. What
+        stands in for it is the signed callback token, which is verified before
+        this is reached — the caller must not invoke this on an unverified
+        request.
+        """
+        result = await self.session.execute(
+            select(Document).where(
+                Document.id == doc_id,
+                Document.status != DocStatus.deleted,
+                Document.deleted_at.is_(None),
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def record_saved_content(self, doc: Document, *, size: int) -> None:
+        """Keep the row in step with the bytes an editor session just wrote."""
+        doc.size = size
+        await self.session.flush()
+
+    async def _get_scoped(self, doc_id: int, user: TokenData) -> Optional[Document]:
+        """
+        One live document within the caller's tenant and department, or None.
+
+        Like `_get_base_parent` but without requiring a folder, and returning
+        None instead of raising — callers here decide what an out-of-scope id
+        should look like.
+        """
+        result = await self.session.execute(
+            select(Document).where(
+                Document.id == doc_id,
+                Document.tenant_id == user.tenant_id,
+                Document.department_id == user.department_id,
+                # Both, not just one: `delete()` sets the pair together, but the
+                # two have drifted apart in the data before (which is why
+                # `doc_list` checks each of them separately too).
+                Document.status != DocStatus.deleted,
+                Document.deleted_at.is_(None),
+            )
+        )
+        return result.scalar_one_or_none()
 
 
     async def _update_access_and_permission(self, db_document, changes, user_repo):
@@ -450,12 +600,20 @@ class MetadataRepository(BaseRepository[Document]):
 
 
     async def _update_doc_user_access(self, db_document, user_id):
-
+        # The column is `document_id`, not `doc_id` — the old spelling raised
+        # CompileError, so granting a user access to a document never worked.
+        # `access_level` is NOT NULL with no default, so it has to be supplied.
         stmt = insert(doc_user_access).values(
-            doc_id=db_document.__dict__["id"], user_id=user_id
+            document_id=db_document.id,
+            user_id=user_id,
+            access_level=AccessLevel.read,
         )
         await self.session.execute(stmt)
-        await self.session.commit()
+        # No commit: this runs once per recipient from
+        # `_update_access_and_permission`, so committing here would leave a
+        # partial grant behind when a later recipient fails. The request's
+        # session dependency commits once at the end.
+        await self.session.flush()
 
     async def _delete_access(self, document) -> None:
         await self.session.execute(
@@ -481,9 +639,12 @@ class MetadataRepository(BaseRepository[Document]):
             #.where(self.doc_cls.status != DocStatus.deleted)
         )
         result = await self.session.execute(stmt)
-        result.fetchall()
-
-        return result.scalar_one_or_none()
+        # `.first()`, not `.scalar_one_or_none()`: `name` is deliberately not
+        # unique (the same file name is legitimate in different folders), so
+        # requiring exactly one row would raise once two exist. A stray
+        # `fetchall()` used to consume the cursor here, making this return None
+        # every time.
+        return result.scalars().first()
 
     async def upload(
         self, document_upload: DocumentMetadataCreate
@@ -505,6 +666,76 @@ class MetadataRepository(BaseRepository[Document]):
 
         return DocumentMetadataRead(**db_document.__dict__)
 
+    # Columns a client is allowed to sort by. Anything else falls back to
+    # `name`, so a bad query string cannot reach the ORDER BY clause.
+    SORTABLE_COLUMNS = {
+        "name": Document.name,
+        "size": Document.size,
+        "created_at": Document.created_at,
+        "file_type": Document.file_type,
+    }
+
+    @staticmethod
+    def _order_by(sort_by: Optional[str], sort_dir: str, *, folders_first: bool = True):
+        """
+        A total ordering for a page of documents.
+
+        Postgres gives no ordering guarantee without ORDER BY, so paging with
+        OFFSET/LIMIT over an unordered query returns rows in whatever order the
+        plan happens to produce — the same row can come back on two pages while
+        another is never returned at all. Every listing query therefore ends
+        with `id`, which is unique and so makes the order total.
+        """
+        column = MetadataRepository.SORTABLE_COLUMNS.get(
+            (sort_by or "name").lower(), Document.name
+        )
+        # Names are compared case-insensitively; the raw column is left alone
+        # for numeric and timestamp sorts.
+        key = func.lower(column) if column is Document.name else column
+        key = key.asc() if sort_dir != "desc" else key.desc()
+
+        clauses = []
+        if folders_first:
+            # `file_type == 'folder'` sorts before everything else regardless of
+            # the requested direction — folders on top is a layout rule, not a
+            # sort the user asked for.
+            clauses.append((Document.file_type == "folder").desc())
+        clauses.append(key)
+        clauses.append(Document.id.asc())
+        return clauses
+
+    @staticmethod
+    def _escape_like(value: str) -> str:
+        """
+        Neutralise LIKE metacharacters in a literal.
+
+        Without this a file called `отчёт_1` matches `отчётX1`, and one with a
+        `%` in its name matches everything.
+        """
+        return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+    @staticmethod
+    def _escape_like_column(column):
+        """
+        The same escaping, applied in SQL rather than in Python.
+
+        `_folder_sizes` builds its LIKE pattern out of a *column* — one folder's
+        `file_path` — so there is no Python-side string to escape. The nesting
+        order matters: backslashes first, or the escapes introduced by the later
+        two would themselves be escaped.
+        """
+        escaped = func.replace(column, "\\", "\\\\")
+        escaped = func.replace(escaped, "%", "\\%")
+        return func.replace(escaped, "_", "\\_")
+
+    @classmethod
+    def _search_filter(cls, search: Optional[str]):
+        """Case-insensitive substring match on the file name, or None."""
+        term = (search or "").strip()
+        if not term:
+            return None
+        return Document.name.ilike(f"%{cls._escape_like(term)}%", escape="\\")
+
     async def doc_list(
         self,
         owner: TokenData,
@@ -515,8 +746,13 @@ class MetadataRepository(BaseRepository[Document]):
         limit: int = 100,
         offset: int = 0,
         root_id: Optional[int] = None,        # ⟵ NEW
-
+        search: Optional[str] = None,
+        sort_by: Optional[str] = None,
+        sort_dir: str = "asc",
     ):
+        order_by = self._order_by(sort_by, sort_dir)
+        search_filter = self._search_filter(search)
+
         # Guard: both flags at once is ambiguous
         if root_id is not None:
             # собираем всё поддерево root_id (включая сам корень)
@@ -534,12 +770,16 @@ class MetadataRepository(BaseRepository[Document]):
             # корень поддерева
             root_base = base.where(Document.id == root_id)
 
-            d_parent = aliased(Document)
-            d_child  = aliased(Document)
+            # The recursive term has to join the CTE, not another alias of the
+            # table. Joining `documents` to itself here selects every row that
+            # has any parent — the whole library — so `root_id` stopped scoping
+            # anything and a project-scoped search returned other projects' hits.
+            cte = root_base.cte(name="subtree", recursive=True)
 
+            d_child = aliased(Document)
             rec = (
                 select(d_child)
-                .join(d_parent, d_child.parent_id == d_parent.id)
+                .join(cte, d_child.parent_id == cte.c.id)
                 .where(d_child.tenant_id == owner.tenant_id)
                 .where(d_child.department_id == owner.department_id)
                 .where(d_child.status != DocStatus.deleted)
@@ -549,36 +789,38 @@ class MetadataRepository(BaseRepository[Document]):
             elif files_only:
                 rec = rec.where(d_child.file_type != "folder")
 
-            cte = root_base.union_all(rec).cte(name="subtree", recursive=True)
+            cte = cte.union_all(rec)
 
             # НЕрекурсивный режим: показываем «текущий уровень» внутри поддерева
             if not recursive:
                 # parent_id=None трактуем как «дети root_id»
                 effective_parent = root_id if parent_id is None else parent_id
 
-                rows_q = (
+                level = (
                     select(Document)
                     .join(cte, cte.c.id == Document.id)
                     .where(Document.parent_id == effective_parent)
-                    .offset(offset).limit(limit)
                 )
+                if search_filter is not None:
+                    level = level.where(search_filter)
 
-                cnt_q = (
-                    select(func.count())
-                    .select_from(
-                        select(Document.id)
-                        .join(cte, cte.c.id == Document.id)
-                        .where(Document.parent_id == effective_parent)
-                        .subquery()
-                    )
+                rows_q = level.order_by(*order_by).offset(offset).limit(limit)
+                cnt_q = select(func.count()).select_from(
+                    level.with_only_columns(Document.id).order_by(None).subquery()
                 )
                 total = (await self.session.execute(cnt_q)).scalar_one()
                 docs  = (await self.session.execute(rows_q)).scalars().all()
                 return await self._serialize_with_folder_sizes(docs, int(total), owner, with_sizes=not only_folders)
 
             # Рекурсивный режим: отдаём всё поддерево (с пагинацией/фильтрами)
-            rows_q = select(Document).join(cte, cte.c.id == Document.id).offset(offset).limit(limit)
-            cnt_q  = select(func.count()).select_from(select(Document.id).join(cte, cte.c.id == Document.id).subquery())
+            subtree = select(Document).join(cte, cte.c.id == Document.id)
+            if search_filter is not None:
+                subtree = subtree.where(search_filter)
+
+            rows_q = subtree.order_by(*order_by).offset(offset).limit(limit)
+            cnt_q = select(func.count()).select_from(
+                subtree.with_only_columns(Document.id).order_by(None).subquery()
+            )
             total  = (await self.session.execute(cnt_q)).scalar_one()
             docs   = (await self.session.execute(rows_q)).scalars().all()
             return await self._serialize_with_folder_sizes(docs, int(total), owner, with_sizes=not only_folders)
@@ -600,6 +842,9 @@ class MetadataRepository(BaseRepository[Document]):
             # adapt to your model: either `is_folder = False` or file_type != "folder"
             base = base.where(Document.file_type != "folder")
 
+        if search_filter is not None:
+            base = base.where(search_filter)
+
         if not recursive:
             # Current level only
             if parent_id is None:
@@ -612,7 +857,7 @@ class MetadataRepository(BaseRepository[Document]):
             total_count = (await self.session.execute(count_stmt)).scalar_one()
 
             # Page
-            stmt = base.offset(offset).limit(limit)
+            stmt = base.order_by(*order_by).offset(offset).limit(limit)
             docs = (await self.session.execute(stmt)).scalars().all()
 
             return await self._serialize_with_folder_sizes(docs, int(total_count), owner, with_sizes=not only_folders)
@@ -635,37 +880,39 @@ class MetadataRepository(BaseRepository[Document]):
         elif files_only:
             base = base.where(Document.file_type != "folder")
 
-        doc_alias = aliased(Document)
+        # As in the root_id branch: the recursive term must join the CTE. Joining
+        # `documents` to a second alias of itself matched every row with a
+        # parent, so a recursive listing returned unrelated folders and repeated
+        # rows through the UNION ALL.
+        cte = base.cte(name="recursive_docs", recursive=True)
 
+        child = aliased(Document)
         recursive_q = (
-            select(Document)
-            .join(doc_alias, Document.parent_id == doc_alias.id)
-            .where(Document.tenant_id == owner.tenant_id)
-            .where(Document.department_id == owner.department_id)
-            .where(Document.status != DocStatus.deleted)
+            select(child)
+            .join(cte, child.parent_id == cte.c.id)
+            .where(child.tenant_id == owner.tenant_id)
+            .where(child.department_id == owner.department_id)
+            .where(child.status != DocStatus.deleted)
         )
 
         if only_folders:
-            recursive_q = recursive_q.where(Document.file_type == "folder")
+            recursive_q = recursive_q.where(child.file_type == "folder")
         elif files_only:
-            recursive_q = recursive_q.where(Document.file_type != "folder")
+            recursive_q = recursive_q.where(child.file_type != "folder")
 
-        cte = base.union_all(recursive_q).cte(name="recursive_docs", recursive=True)
+        cte = cte.union_all(recursive_q)
 
-        rows_stmt = (
-            select(Document)
-            .join(cte, Document.id == cte.c.id)
-            .offset(offset)
-            .limit(limit)
+        # The search term filters the *result*, not the walk: a match nested
+        # under a non-matching folder still has to be reachable.
+        descendants = select(Document).join(cte, Document.id == cte.c.id)
+        if search_filter is not None:
+            descendants = descendants.where(search_filter)
+
+        rows_stmt = descendants.order_by(*order_by).offset(offset).limit(limit)
+
+        count_stmt = select(func.count()).select_from(
+            descendants.with_only_columns(Document.id).order_by(None).subquery()
         )
-
-        count_from = (
-            select(Document)
-            .join(cte, Document.id == cte.c.id)
-            .order_by(None)
-            .subquery()
-        )
-        count_stmt = select(func.count()).select_from(count_from)
         total = (await self.session.execute(count_stmt)).scalar_one()
 
         docs = (await self.session.execute(rows_stmt)).scalars().all()
@@ -686,10 +933,19 @@ class MetadataRepository(BaseRepository[Document]):
         parent = aliased(Document)
         child = aliased(Document)
 
+        # The pattern comes from a column, so it has to be escaped in SQL. A
+        # folder called `2024_Q1` otherwise matched `2024XQ1/...` and reported
+        # the neighbouring folder's bytes as its own.
+        #
+        # Note this join can never use ix_documents_file_path_prefix — the
+        # pattern is not a constant — so do not "simplify" the escaping away in
+        # the hope of getting an index scan. There was never one to get.
+        prefix = self._escape_like_column(parent.file_path).concat("/%")
+
         stmt = (
             select(parent.id, func.coalesce(func.sum(child.size), 0))
             .select_from(parent)
-            .join(child, child.file_path.like(parent.file_path.concat("/%")))
+            .join(child, child.file_path.like(prefix, escape="\\"))
             .where(parent.id.in_([f.id for f in wanted]))
             .where(child.tenant_id == owner.tenant_id)
             .where(child.department_id == owner.department_id)
@@ -726,10 +982,20 @@ class MetadataRepository(BaseRepository[Document]):
 
 
     async def list_folders(self, owner: TokenData):
+        """
+        Every folder the caller can see — the source for the "move to" picker.
+
+        `owner` was already a parameter and simply went unused: there were no
+        filters at all, so this handed each caller the complete folder tree of
+        every tenant in the database, soft-deleted folders included.
+        """
         q = (
             select(self.doc_cls.id, self.doc_cls.name, self.doc_cls.parent_id)
             .where(self.doc_cls.file_type == "folder")
-            # add tenant / ACL filters here as you do elsewhere
+            .where(self.doc_cls.tenant_id == owner.tenant_id)
+            .where(self.doc_cls.department_id == owner.department_id)
+            .where(self.doc_cls.status != DocStatus.deleted)
+            .where(self.doc_cls.deleted_at.is_(None))
             .order_by(self.doc_cls.parent_id.nullsfirst(), self.doc_cls.name)
         )
         rows = (await self.session.execute(q)).all()
@@ -757,19 +1023,31 @@ class MetadataRepository(BaseRepository[Document]):
 
         if is_owner:
             db_document = await self._get_instance(document=document, owner=owner)
+            if db_document is None:
+                raise http_404(msg=f"No Document with: {document}")
             changes = await self._extract_changes(document_patch)
 
+            # Reads `access_to` — so it has to run before the patch is narrowed
+            # to real columns below.
             await self._update_access_and_permission(db_document, changes, user_repo)
 
-            await self._execute_update(db_document, changes)
+            writable = self._writable_changes(changes)
+            # `update().values({})` is itself an error, and a patch carrying only
+            # tags is a legitimate no-op now that they are filtered out.
+            if writable:
+                await self._execute_update(db_document, writable)
+                await self.session.refresh(db_document)
 
         else:
             # This condition will be activated when, the new version of file is added by a privileged memberment.
             db_document = await self.get_doc(filename=str(document))
-            changes = await self._extract_changes(document_patch)
+            if db_document is None:
+                raise http_404(msg=f"No Document with: {document}")
+            changes = self._writable_changes(await self._extract_changes(document_patch))
 
             if changes:
                 await self._execute_update(db_document, changes)
+                await self.session.refresh(db_document)
 
         return DocumentMetadataRead(**db_document.__dict__)
     async def delete(self, document: Union[str, int, UUID], owner: TokenData) -> None:
@@ -796,6 +1074,12 @@ class MetadataRepository(BaseRepository[Document]):
                 await self.session.execute(
                     update(Document)
                     .where(Document.id.in_(ids))
+                    # Don't overwrite a row that was already in the bin: a file
+                    # trashed on its own keeps the moment *it* was trashed, so
+                    # the bin's "deleted at" column tells the truth. Without
+                    # this, deleting the parent folder restamps its whole
+                    # subtree and that history is gone.
+                    .where(Document.status != DocStatus.deleted)
                     .values(deleted_at=now, status=DocStatus.deleted)
                 )
 
@@ -812,73 +1096,248 @@ class MetadataRepository(BaseRepository[Document]):
             logger.exception("Delete failed for %s", document)  # даст полный стек
             raise http_404(msg=f"Failed to delete document: {document}") from e
 
+    @staticmethod
+    def _parent_is_trashed():
+        """
+        True when this row's parent is itself in the bin.
+
+        Correlated against the enclosing `Document`, so it composes into any
+        query over it. `parent_id IS NULL` needs no special case — the join
+        matches nothing, so a top-level row is never "inside" a trashed folder.
+
+        Deliberately not scoped by owner: `delete()` cascades through
+        `_list_descendants_raw`, which is scoped by tenant/department and *not*
+        by owner, so a colleague's file inside your folder is already trashed by
+        your action. The bin has to agree, or that file surfaces as a phantom
+        top-level entry whose restore produces a live row under a deleted parent
+        — invisible in every listing.
+        """
+        parent = aliased(Document, name="trash_parent")
+        return (
+            select(parent.id)
+            .where(parent.id == Document.parent_id)
+            .where(parent.status == DocStatus.deleted)
+            .exists()
+        )
+
     async def bin_list(self, owner: TokenData) -> dict:
-            stmt = (
+        """
+        The bin, listing only what the user actually deleted.
+
+        A folder and everything under it are marked identically by `delete()`,
+        so listing every row with `status == deleted` put one entry in the bin
+        per file — deleting a folder of 40 files produced 41 rows. Like Google
+        Drive, only "trash roots" are listed: a deleted row whose parent is not
+        also deleted. Restoring one brings its whole subtree back.
+        """
+        stmt = (
+            select(Document)
+            .where(Document.owner_id == owner.id)
+            .where(Document.tenant_id == owner.tenant_id)
+            .where(Document.department_id == owner.department_id)
+            .where(Document.status == DocStatus.deleted)
+            .where(~self._parent_is_trashed())
+            .order_by(
+                Document.deleted_at.desc().nullslast(),
+                (Document.file_type == "folder").desc(),
+                func.lower(Document.name),
+                Document.id,
+            )
+        )
+        result = await self.session.scalars(stmt)
+        docs = [
+            DocumentMetadataRead.model_validate(doc, from_attributes=True)
+            for doc in result
+        ]
+        return {"response": docs, "no_of_docs": len(docs)}
+
+    #: What a restored document's status becomes.
+    #:
+    #: `delete()` overwrites `status`, so the value a document had before it was
+    #: trashed is not recorded anywhere and cannot be put back. This used to be
+    #: `private`, which at subtree scale is destructive: the importer writes
+    #: every row as `public` and `_get_instance` admits a document only when it
+    #: is `public` or owned by the caller, so restoring a folder would make its
+    #: contents unreachable to everyone but its owner. `public` matches how
+    #: essentially every row in this deployment was created.
+    #:
+    #: The real fix is to stop overwriting `status` at all and use `deleted_at`
+    #: as the sole trash marker — a wider change, since ~18 filters test the
+    #: status and `ix_documents_scope` is built on it.
+    RESTORED_STATUS = DocStatus.public
+
+    async def restore(self, doc_id: int, owner: TokenData) -> DocumentMetadataRead:
+        """
+        Take a document out of the bin, together with everything under it.
+
+        This used to match by *name* through a scan of the bin and restore that
+        single row — so restoring a folder left its contents deleted, and
+        restoring a nested file produced a live row under a deleted parent,
+        which no listing will show and `_collect_purgeable` then refuses to
+        permanently delete.
+        """
+        root = (
+            await self.session.execute(
                 select(Document)
+                .where(Document.id == doc_id)
                 .where(Document.owner_id == owner.id)
                 .where(Document.tenant_id == owner.tenant_id)
                 .where(Document.department_id == owner.department_id)
                 .where(Document.status == DocStatus.deleted)
             )
-            result = await self.session.scalars(stmt)
-            docs = [DocumentMetadataRead.from_orm(doc) for doc in result]
-            return {"response": docs, "no_of_docs": len(docs)}
+        ).scalar_one_or_none()
 
-    async def restore(self, file: str, owner: TokenData) -> DocumentMetadataRead:
+        if root is None:
+            raise http_404(msg=f"No document in the bin with id: {doc_id}")
 
-        doc_list = await self.bin_list(owner=owner)
+        # The bin no longer offers a nested row, but a direct API call could ask
+        # for one. Restoring it would strand it under a deleted parent.
+        parent_trashed = await self.session.scalar(
+            select(
+                select(Document.id)
+                .where(Document.id == root.parent_id)
+                .where(Document.status == DocStatus.deleted)
+                .exists()
+            )
+        )
+        if parent_trashed:
+            raise http_409(
+                msg="Сначала восстановите родительскую папку."
+            )
 
-        if doc_list["no_of_docs"] > 0:
-            for doc in doc_list["response"]:
-                if doc.name == file:
-                    # Find the deleted document directly from database
-                    stmt = (
-                        select(Document)
-                        .where(Document.id == doc.id)
-                        .where(Document.owner_id == owner.id)
-                        .where(Document.tenant_id == owner.tenant_id)
-                        .where(Document.department_id == owner.department_id)
-                        .where(Document.status == DocStatus.deleted)
-                    )
-                    result = await self.session.execute(stmt)
-                    db_document = result.scalar_one_or_none()
-                    
-                    if db_document:
-                        # Clear deleted_at and set status back to private
-                        db_document.deleted_at = None
-                        db_document.status = DocStatus.private
-                        self.session.add(db_document)
-                        await self.session.commit()
-                        return DocumentMetadataRead(**db_document.__dict__)
-            raise http_409(msg="Document is not deleted")
-        raise http_404(msg="Document does not exists")
+        descendants = await self._list_descendants_raw(root)
+        ids = [
+            root.id,
+            # Only rows this delete actually trashed. A live descendant — the
+            # status/deleted_at drift that exists in this data — is left alone.
+            *(d.id for d in descendants if d.status == DocStatus.deleted),
+        ]
+
+        await self.session.execute(
+            update(Document)
+            .where(Document.id.in_(ids))
+            .values(deleted_at=None, status=self.RESTORED_STATUS)
+        )
+        # Flush, not commit — matches `perm_delete_a_doc`; the request's session
+        # dependency commits once at the end.
+        await self.session.flush()
+        await self.session.refresh(root)
+
+        return DocumentMetadataRead.model_validate(root, from_attributes=True)
+
+    async def _purge_dependents(self, ids: list[int]) -> None:
+        """
+        Remove every row that references these documents.
+
+        `Document.children` carries `cascade="all, delete"`, but that is an *ORM*
+        cascade and a Core `delete()` statement bypasses it entirely — so a bare
+        DELETE hit a ForeignKeyViolation from `document_versions`,
+        `shared_documents`, `share_links` or `permissions`.
+        """
+        if not ids:
+            return
+
+        await self.session.execute(
+            doc_user_access.delete().where(doc_user_access.c.document_id.in_(ids))
+        )
+        await self.session.execute(
+            delete(DocumentVersion).where(DocumentVersion.document_id.in_(ids))
+        )
+        await self.session.execute(
+            delete(ShareLink).where(ShareLink.document_id.in_(ids))
+        )
+        await self.session.execute(
+            delete(SharedDocument).where(SharedDocument.document_id.in_(ids))
+        )
+
+    async def _collect_purgeable(self, doc: Document) -> list[int]:
+        """
+        `doc` and its whole subtree, provided every part of it is in the bin.
+
+        A child can be live under a trashed parent: `restore()` restores one row
+        by name, and does not touch its ancestors. Removing the parent would then
+        orphan a document the user asked to keep.
+        """
+        descendants = await self._list_descendants_raw(doc)
+        restored = [
+            d for d in descendants
+            if d.status != DocStatus.deleted and d.deleted_at is None
+        ]
+        if restored:
+            raise http_409(
+                msg=(
+                    f"«{doc.name}» содержит восстановленные элементы "
+                    f"({len(restored)}) — сначала удалите или переместите их."
+                )
+            )
+        return [doc.id, *(d.id for d in descendants)]
 
     async def perm_delete_a_doc(self, document: UUID | None, owner: TokenData) -> None:
-
-        stmt = (
-            delete(Document)
+        result = await self.session.execute(
+            select(Document)
             .where(Document.owner_id == owner.id)
             .where(Document.tenant_id == owner.tenant_id)
             .where(Document.department_id == owner.department_id)
             .where(Document.id == document)
             .where(Document.status == DocStatus.deleted)
         )
+        doc = result.scalar_one_or_none()
+        if doc is None:
+            raise http_404(msg=f"No document in the bin with id: {document}")
 
-        await self.session.execute(stmt)
-        await self.session.commit()
+        ids = await self._collect_purgeable(doc)
+        await self._purge_dependents(ids)
 
-    async def empty_bin(self, owner: TokenData):
+        # One statement for parents and children together: referential integrity
+        # is checked at end-of-statement, so no depth ordering is needed. Deleting
+        # only the requested row left its trashed descendants pointing at a
+        # parent that no longer existed.
+        await self.session.execute(delete(Document).where(Document.id.in_(ids)))
+        await self.session.flush()
 
-        stmt = (
-            delete(Document)
+    async def empty_bin(self, owner: TokenData) -> dict:
+        """
+        Empty the caller's bin.
+
+        A folder that still holds a restored item is skipped and named in the
+        result rather than failing the whole call — one awkward row should not
+        stop the rest of the bin from being emptied.
+        """
+        result = await self.session.execute(
+            select(Document)
             .where(Document.owner_id == owner.id)
             .where(Document.tenant_id == owner.tenant_id)
             .where(Document.department_id == owner.department_id)
             .where(Document.status == DocStatus.deleted)
+            # Trash roots only — the same rows the bin shows. Iterating every
+            # trashed row instead worked, but a folder that had to be skipped
+            # was named by whichever nested row was reached first, which is not
+            # something the user has seen. Ordering by `parent_id` was also
+            # described as "shallowest first" and is not: it orders by the id
+            # value, not by depth.
+            .where(~self._parent_is_trashed())
+            .order_by(Document.id)
         )
+        trashed = result.scalars().all()
 
-        await self.session.execute(stmt)
-        await self.session.commit()
+        purge: set[int] = set()
+        skipped: list[str] = []
+
+        for doc in trashed:
+            if doc.id in purge:
+                continue
+            try:
+                purge.update(await self._collect_purgeable(doc))
+            except HTTPException:
+                skipped.append(doc.name)
+
+        ids = sorted(purge)
+        await self._purge_dependents(ids)
+        if ids:
+            await self.session.execute(delete(Document).where(Document.id.in_(ids)))
+        await self.session.flush()
+
+        return {"deleted": len(ids), "skipped": skipped}
 
     async def archive(self, document: str, user: TokenData) -> DocumentMetadataRead:
 
