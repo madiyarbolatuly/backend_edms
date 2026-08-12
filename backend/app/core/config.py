@@ -35,7 +35,7 @@ class GlobalConfig(BaseSettings):
     # Base address share links are built against. Must be reachable by the
     # recipient, so it is the public deployment URL — never localhost or a LAN
     # address, even when the app is opened from one.
-    frontend_url: str = os.getenv("FRONTEND_URL", "http://77.245.107.136:8080").rstrip("/")
+    frontend_url: str = os.getenv("FRONTEND_URL", "http://77.245.107.136:8088").rstrip("/")
 
     # Browser origins allowed to call the API. Set CORS_ORIGINS (comma-separated)
     # to override wholesale — a deployment that moves to a new address needs an
@@ -49,13 +49,14 @@ class GlobalConfig(BaseSettings):
         return [
             "http://localhost:5173",
             "http://localhost:3000",
-            "http://localhost:8080",
+            "http://localhost:8088",
             "http://localhost:8081",
+            "http://127.0.0.1:8088",
             "http://127.0.0.1:8000",
-            "http://77.245.107.136:8080",
-            "http://89.218.93.198:8080",
-            "http://192.168.8.121:8080",
-            "http://192.168.2.94:8080",
+            "http://77.245.107.136:8088",
+            "http://89.218.93.198:8088",
+            "http://192.168.8.121:8088",
+            "http://192.168.2.94:8088",
         ]
 
     # ─── add this alias immediately below ───────────────────────────────────────
