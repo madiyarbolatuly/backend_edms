@@ -53,6 +53,12 @@ ROOT_PREFIX   = normalise_prefix(os.environ.get("ROOT_PREFIX"))
 # ── Hashing
 HASH_FILES  = os.environ.get("HASH_FILES", "true").lower() == "true"
 
+# ── Scheduling
+# 0 (the default) keeps the historical one-shot behaviour: scan once, exit.
+# Anything > 0 turns the script into a long-running poller that rescans every
+# SCAN_INTERVAL seconds — that is what the `scanner-cron` compose service uses.
+SCAN_INTERVAL = int(os.environ.get("SCAN_INTERVAL", "0"))
+
 # ── Skip noise
 EXCLUDE_FILES = {"Thumbs.db", "desktop.ini", ".DS_Store"}
 EXCLUDE_DIRS  = {
@@ -351,19 +357,28 @@ def delete_stale_paths(cur, existing_paths: set[str], seen_paths: set[str]):
         # (e.g. weird DB state); we leave them to satisfy FK constraints.
         print(f"⚠ Left {len(remaining_paths)} stale records because they still have children")
 
-def main():
+def run_once():
+    """One full filesystem → DB pass. Raises on failure."""
     root_dir = Path(ROOT_SCAN)
     if not root_dir.is_dir():
         raise SystemExit(f"ROOT_SCAN not found: {ROOT_SCAN}")
 
-    print(f"📂 Scanning: {ROOT_SCAN}  →  DB path prefix: '{ROOT_PREFIX}'")
-
-    wait_for_postgres()
+    print(f"📂 Scanning: {ROOT_SCAN}  →  DB path prefix: '{ROOT_PREFIX}'", flush=True)
 
     with psycopg.connect(
         dbname=DB_NAME, user=USER, password=PASSWORD, host=HOST, port=PORT
     ) as conn:
         with conn.cursor() as cur:
+            # Two scanners over the same tenant/department would fight over the
+            # same rows (and `delete_stale_paths` could remove what the other one
+            # has not re-seen yet). A session advisory lock keeps a scheduled run
+            # and a manual `docker compose run scanner` from overlapping; the lock
+            # is released when the connection closes.
+            cur.execute("SELECT pg_try_advisory_lock(%s, %s);", (TENANT_ID, DEPARTMENT_ID))
+            if not cur.fetchone()[0]:
+                print("⏭ Another scan is already running for this tenant/department — skipping", flush=True)
+                return
+
             existing_paths = load_existing_paths(cur)
 
             seen_paths: set[str] = set()
@@ -380,8 +395,34 @@ def main():
         conn.commit()
 
     scope = f"'{ROOT_PREFIX}'" if ROOT_PREFIX else "the storage root"
-    print(f"✔ Indexed {ROOT_SCAN} as {scope} (no duplicates; junk skipped)")
+    print(f"✔ Indexed {ROOT_SCAN} as {scope} (no duplicates; junk skipped)", flush=True)
+
+def main():
+    wait_for_postgres()
+
+    if SCAN_INTERVAL <= 0:
+        run_once()
+        return
+
+    print(f"🔁 Scan loop started: every {SCAN_INTERVAL}s", flush=True)
+    while True:
+        started = time.monotonic()
+        try:
+            run_once()
+        except KeyboardInterrupt:
+            raise
+        except SystemExit as e:
+            # ROOT_SCAN missing (e.g. the volume is not mounted yet). In one-shot
+            # mode that is a hard error; on a schedule it is worth retrying.
+            print(f"❌ {e}", flush=True)
+        except Exception as e:                       # noqa: BLE001 — a bad pass must not stop the schedule
+            print(f"❌ Scan failed: {type(e).__name__}: {e}", flush=True)
+        # Sleep the remainder of the interval so a slow scan does not stack up.
+        time.sleep(max(0.0, SCAN_INTERVAL - (time.monotonic() - started)))
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("👋 Stopped", flush=True)
 

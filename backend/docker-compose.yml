@@ -44,6 +44,33 @@ services:
       - ./:/usr/src/app
       - /home/fanatik/madiyar/final/docedms/backend/uploads/1/1:/usr/src/app/uploads/1/1
 
+  # Same scan as `scanner`, but running continuously: every SCAN_INTERVAL
+  # seconds the storage root is re-indexed, so files added/renamed/removed on
+  # disk show up in `documents` without anyone running the scan by hand.
+  # Starts with the stack (no profile); one-off runs still go through `scanner`.
+  scanner-cron:
+    build: .
+    command: python app/scan/scan_and_upload.py
+    depends_on: [postgres]
+    env_file: app/.env
+    restart: unless-stopped
+    environment:
+      POSTGRES_HOST: postgres
+      SCAN_INTERVAL: "300"        # 5 минут; 0 — один проход и выход
+      ROOT_SCAN: /usr/src/app/uploads/1/1
+      ROOT_PREFIX: ""
+      TENANT_ID: "1"
+      DEPARTMENT_ID: "1"
+      OWNER_ID: "c17ba46f-b4b0-473c-ac93-cb10cfed0f7e"
+      # Hashing every file on every pass is the expensive part of a scan —
+      # keep it off for the scheduled one.
+      HASH_FILES: "false"
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+    volumes:
+      - ./:/usr/src/app
+      - /home/fanatik/madiyar/final/docedms/backend/uploads/1/1:/usr/src/app/uploads/1/1
+
   postgres:
     image: postgres:16
     env_file: app/.env
