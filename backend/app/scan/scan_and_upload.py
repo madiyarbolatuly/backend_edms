@@ -53,6 +53,10 @@ ROOT_PREFIX   = normalise_prefix(os.environ.get("ROOT_PREFIX"))
 # ── Hashing
 HASH_FILES  = os.environ.get("HASH_FILES", "true").lower() == "true"
 
+# ── Stale-record safety net (see delete_stale_paths)
+MAX_STALE_RATIO   = float(os.environ.get("MAX_STALE_RATIO", "0.2"))
+ALLOW_BULK_DELETE = os.environ.get("ALLOW_BULK_DELETE", "false").lower() == "true"
+
 # ── Scheduling
 # 0 (the default) keeps the historical one-shot behaviour: scan once, exit.
 # Anything > 0 turns the script into a long-running poller that rescans every
@@ -271,6 +275,7 @@ def delete_stale_paths(cur, existing_paths: set[str], seen_paths: set[str]):
 
     Rules:
       - Only paths in existing_paths but not in seen_paths are considered stale.
+      - Refuse a mass deletion that looks like a broken mount (see below).
       - Never delete documents that are referenced from shared_documents.
       - Never delete a document that still has children (folders/files) in documents.
       - Delete in iterations from leaves up to avoid parent_id FK violations.
@@ -278,6 +283,24 @@ def delete_stale_paths(cur, existing_paths: set[str], seen_paths: set[str]):
     stale_paths = existing_paths - seen_paths
     if not stale_paths:
         return
+
+    # A ROOT_SCAN that is empty — an unmounted volume, a wrong path, a storage
+    # server that has not come back yet — is indistinguishable from "the user
+    # deleted everything", and this function would happily wipe the catalogue.
+    # It has done exactly that once: an empty mount removed 117k rows in a single
+    # scheduled pass. Refuse to prune when the scan saw suspiciously little, and
+    # let the operator override deliberately.
+    if not ALLOW_BULK_DELETE and existing_paths:
+        stale_ratio = len(stale_paths) / len(existing_paths)
+        if not seen_paths or stale_ratio > MAX_STALE_RATIO:
+            print(
+                f"🛑 Refusing to delete {len(stale_paths)} of {len(existing_paths)} records "
+                f"({stale_ratio:.0%} of the catalogue) after seeing {len(seen_paths)} paths on disk. "
+                f"This usually means ROOT_SCAN ({ROOT_SCAN}) is empty or wrong, not that the files are gone. "
+                f"Set ALLOW_BULK_DELETE=true (or raise MAX_STALE_RATIO) if the deletion is intended.",
+                flush=True,
+            )
+            return
 
     remaining_paths = set(stale_paths)
     total_deleted = 0
