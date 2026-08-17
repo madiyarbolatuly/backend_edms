@@ -72,22 +72,46 @@ async def favicon():
     return FileResponse(FAVICON_PATH)
 
 
+# Paths that belong to the API, not to the SPA. A request under one of these
+# that matched no route is a real 404 and must be reported as one — serving
+# index.html instead would answer a mistyped endpoint with 200 and a page of
+# HTML, which every client (axios included) then fails to parse in some less
+# obvious way.
+NON_SPA_PREFIXES = (
+    settings.api_prefix.strip("/"),
+    "api",
+    "office",
+    "files",
+    "docs",
+    "redoc",
+    "openapi.json",
+)
+
+
 class SPAStaticFiles(StaticFiles):
     """
-    StaticFiles that falls back to index.html instead of 404ing.
+    StaticFiles that falls back to index.html for client-side routes.
 
-    The SPA routes client-side (react-router), so /documents/42 exists only in
-    the browser — as a request it hits this mount and matches no file. Plain
-    StaticFiles answers 404, which breaks every deep link and every F5 on a
-    page that is not "/". API paths are unaffected: their routes are
-    registered before this mount and never reach it.
+    The SPA routes in the browser (react-router), so /documents/42 exists only
+    there — as a request it reaches this mount and matches no file. Plain
+    StaticFiles answers 404, which breaks every deep link and every reload of
+    a page that is not "/". API paths keep their real 404 (see above); so do
+    requests for missing assets, which should fail visibly rather than return
+    HTML with a .js content type.
     """
 
     async def get_response(self, path: str, scope):
         response = await super().get_response(path, scope)
-        if response.status_code == 404:
-            return await super().get_response("index.html", scope)
-        return response
+        if response.status_code != 404:
+            return response
+        clean = path.strip("/")
+        head, _, tail = clean.partition("/")
+        # A dot in the final segment means an asset was asked for by name
+        # (assets/index-abc.js) — a missing one is a broken build, and hiding
+        # it behind index.html served as JavaScript only delays the report.
+        if head in NON_SPA_PREFIXES or "." in (tail.rsplit("/", 1)[-1] or head):
+            return response
+        return await super().get_response("index.html", scope)
 
 
 def mount_frontend(application: FastAPI, build_dir: pathlib.Path) -> bool:
@@ -104,7 +128,7 @@ def mount_frontend(application: FastAPI, build_dir: pathlib.Path) -> bool:
         return False
     application.mount(
         "/",
-        StaticFiles(directory=str(build_dir), html=True),
+        SPAStaticFiles(directory=str(build_dir), html=True),
         name="frontend",
     )
     return True
