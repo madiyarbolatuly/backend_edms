@@ -3,6 +3,10 @@ version: "3.9"
 services:
   api:
     build: .
+    # The stack serves the built frontend too (app/frontend/dist), so this
+    # container going down takes the UI with it — bring it back on crash and
+    # on host reboot.
+    restart: unless-stopped
     depends_on: [postgres]
     ports: ["8000:8000"]
     env_file: app/.env
@@ -73,6 +77,7 @@ services:
 
   postgres:
     image: postgres:16
+    restart: unless-stopped
     env_file: app/.env
     volumes:
       - postgres-db:/var/lib/postgresql/data

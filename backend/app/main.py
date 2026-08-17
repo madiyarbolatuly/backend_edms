@@ -48,7 +48,14 @@ app.mount(
 )  # :contentReference[oaicite:6]{index=6}
 
 app.include_router(router, prefix=settings.api_prefix)
+# Same routes once more under /api. The built SPA calls `/api/v2/...` (see
+# src/config/api.ts) because in dev the vite proxy strips the `/api` prefix;
+# when the build is served straight from here there is no proxy to strip it,
+# so the prefix has to exist on the API side. Kept out of the schema so /docs
+# does not list every endpoint twice.
+app.include_router(router, prefix=f"/api{settings.api_prefix}", include_in_schema=False)
 app.include_router(onlyoffice_router)
+app.include_router(onlyoffice_router, prefix="/api", include_in_schema=False)
 
 
 # Served from this package, not the working directory. The path also needs its
@@ -63,6 +70,24 @@ async def favicon():
     if not FAVICON_PATH.exists():
         raise HTTPException(status_code=404, detail="No favicon")
     return FileResponse(FAVICON_PATH)
+
+
+class SPAStaticFiles(StaticFiles):
+    """
+    StaticFiles that falls back to index.html instead of 404ing.
+
+    The SPA routes client-side (react-router), so /documents/42 exists only in
+    the browser — as a request it hits this mount and matches no file. Plain
+    StaticFiles answers 404, which breaks every deep link and every F5 on a
+    page that is not "/". API paths are unaffected: their routes are
+    registered before this mount and never reach it.
+    """
+
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        if response.status_code == 404:
+            return await super().get_response("index.html", scope)
+        return response
 
 
 def mount_frontend(application: FastAPI, build_dir: pathlib.Path) -> bool:
