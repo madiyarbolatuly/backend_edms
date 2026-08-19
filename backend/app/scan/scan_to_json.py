@@ -9,7 +9,7 @@ ROOT_NAME = os.path.basename(ROOT_SCAN.rstrip("/"))
 
 TENANT_ID = 1
 DEPARTMENT_ID = 1
-OWNER_ID = "c17ba46f-b4b0-473c-ac93-cb10cfed0f7e"  # твой реальный user_id
+OWNER_ID = "01K33DTSJ92FF4FRAKW0TRTWYE"  # аккаунт admin, как и в scan_and_upload.py
 
 def get_file_hash(filepath):
     h = hashlib.sha256()

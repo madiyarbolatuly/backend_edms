@@ -43,7 +43,7 @@ services:
       ROOT_PREFIX: ""
       TENANT_ID: "1"
       DEPARTMENT_ID: "1"
-      OWNER_ID: "c17ba46f-b4b0-473c-ac93-cb10cfed0f7e"
+      OWNER_ID: "01K33DTSJ92FF4FRAKW0TRTWYE"
       HASH_FILES: "false"
       LANG: C.UTF-8
       LC_ALL: C.UTF-8
@@ -68,7 +68,7 @@ services:
       ROOT_PREFIX: ""
       TENANT_ID: "1"
       DEPARTMENT_ID: "1"
-      OWNER_ID: "c17ba46f-b4b0-473c-ac93-cb10cfed0f7e"
+      OWNER_ID: "01K33DTSJ92FF4FRAKW0TRTWYE"
       # Hashing every file on every pass is the expensive part of a scan —
       # keep it off for the scheduled one.
       HASH_FILES: "false"

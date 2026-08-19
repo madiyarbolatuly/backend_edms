@@ -36,7 +36,10 @@ PORT      = os.environ.get("POSTGRES_PORT", "5432")
 
 TENANT_ID     = int(os.environ.get("TENANT_ID", "1"))
 DEPARTMENT_ID = int(os.environ.get("DEPARTMENT_ID", "1"))
-OWNER_ID      = os.environ.get("OWNER_ID", "c17ba46f-b4b0-473c-ac93-cb10cfed0f7e")  # ← per your request
+# The `admin` account. Everything the scanner imports is owned by it, so the
+# listings say "admin" rather than naming one employee as the owner of the
+# whole library — nobody imported those files personally.
+OWNER_ID      = os.environ.get("OWNER_ID", "01K33DTSJ92FF4FRAKW0TRTWYE")
 
 # ── Scan roots
 ROOT_SCAN_RAW = os.environ.get("ROOT_SCAN", "/mnt/Projects-2025").strip()
