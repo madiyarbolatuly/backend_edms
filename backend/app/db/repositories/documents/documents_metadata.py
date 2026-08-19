@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 from app.core.exceptions import http_409, http_404
 from app.db.repositories.auth.auth import AuthRepository
+from app.db.tables.auth.auth import User
 from app.db.tables.documents.documents import Document
 from app.db.tables.base_class import DocStatus
 from app.schemas.auth.bands import TokenData
@@ -496,9 +497,9 @@ class MetadataRepository(BaseRepository[Document]):
                 department_id=user.department_id,
             )
 
-        return [
-            DocumentMetadataRead.model_validate(d, from_attributes=True) for d in docs
-        ]
+        return await self._with_owners(
+            [DocumentMetadataRead.model_validate(d, from_attributes=True) for d in docs]
+        )
 
     async def get_document_for_callback(self, doc_id: int) -> Optional[Document]:
         """
@@ -664,7 +665,7 @@ class MetadataRepository(BaseRepository[Document]):
                 msg=f"Документ с именем: {document_upload.name} уже существует.",
             ) from e
 
-        return DocumentMetadataRead(**db_document.__dict__)
+        return await self._with_owner(DocumentMetadataRead(**db_document.__dict__))
 
     # Columns a client is allowed to sort by. Anything else falls back to
     # `name`, so a bad query string cannot reach the ORDER BY clause.
@@ -957,6 +958,45 @@ class MetadataRepository(BaseRepository[Document]):
         rows = (await self.session.execute(stmt)).all()
         return {row[0]: int(row[1] or 0) for row in rows}
 
+    async def _owner_labels(self, rows) -> dict[str, tuple[Optional[str], Optional[str]]]:
+        """
+        `owner_id` → (username, email) for a page of documents.
+
+        One query for the whole page, not one per row: `Document.owner` is a
+        lazy relationship and touching it from async code raises
+        MissingGreenlet, while eager-loading it on every listing query would
+        pull a full user row per document.
+        """
+        ids = {r.owner_id for r in rows if getattr(r, "owner_id", None)}
+        if not ids:
+            return {}
+
+        result = await self.session.execute(
+            select(User.id, User.username, User.email).where(User.id.in_(ids))
+        )
+        return {row[0]: (row[1], row[2]) for row in result.all()}
+
+    @staticmethod
+    def _apply_owner(read: DocumentMetadataRead, labels: dict) -> DocumentMetadataRead:
+        """Fill `owner_name`/`owner_email` in place; unknown owners stay None."""
+        username, email = labels.get(read.owner_id, (None, None))
+        read.owner_name = username or email
+        read.owner_email = email
+        return read
+
+    async def _with_owners(self, reads: list[DocumentMetadataRead]) -> list[DocumentMetadataRead]:
+        labels = await self._owner_labels(reads)
+        return [self._apply_owner(r, labels) for r in reads]
+
+    async def _with_owner(self, read: DocumentMetadataRead) -> DocumentMetadataRead:
+        return self._apply_owner(read, await self._owner_labels([read]))
+
+    async def serialize_one(self, doc: Document) -> DocumentMetadataRead:
+        """A single row as the API returns it, owner resolved."""
+        return await self._with_owner(
+            DocumentMetadataRead.model_validate(doc, from_attributes=True)
+        )
+
     async def _serialize_with_folder_sizes(
         self, docs: list[Document], total: int, owner: TokenData,
         with_sizes: bool = True,
@@ -970,13 +1010,14 @@ class MetadataRepository(BaseRepository[Document]):
         """
         folders = [d for d in docs if d.file_type == "folder"] if with_sizes else []
         sizes = await self._folder_sizes(folders, owner)
+        labels = await self._owner_labels(docs)
 
         items = []
         for doc in docs:
             read = DocumentMetadataRead.model_validate(doc, from_attributes=True)
             if doc.file_type == "folder":
                 read.size = sizes.get(doc.id, 0)
-            items.append(read)
+            items.append(self._apply_owner(read, labels))
 
         return {"documents": items, "total_count": total}
 
@@ -1010,7 +1051,7 @@ class MetadataRepository(BaseRepository[Document]):
         if db_document is None:
             raise http_409(msg=f"No Document with {document}")
 
-        return DocumentMetadataRead(**db_document.__dict__)
+        return await self._with_owner(DocumentMetadataRead(**db_document.__dict__))
 
     async def patch(
         self,
@@ -1049,7 +1090,7 @@ class MetadataRepository(BaseRepository[Document]):
                 await self._execute_update(db_document, changes)
                 await self.session.refresh(db_document)
 
-        return DocumentMetadataRead(**db_document.__dict__)
+        return await self._with_owner(DocumentMetadataRead(**db_document.__dict__))
     async def delete(self, document: Union[str, int, UUID], owner: TokenData) -> None:
         try:
             # 1) читаем корень в рамках tenant/department (как ты уже сделал в _get_instance)
@@ -1080,7 +1121,13 @@ class MetadataRepository(BaseRepository[Document]):
                     # this, deleting the parent folder restamps its whole
                     # subtree and that history is gone.
                     .where(Document.status != DocStatus.deleted)
-                    .values(deleted_at=now, status=DocStatus.deleted)
+                    .values(
+                        deleted_at=now,
+                        status=DocStatus.deleted,
+                        # The bin is keyed off this, not off `owner_id` —
+                        # see `_trashed_by`.
+                        deleted_by=owner.id,
+                    )
                 )
 
             # 4) если уже есть транзакция — просто выполняем; если нет — откроем свою
@@ -1095,6 +1142,28 @@ class MetadataRepository(BaseRepository[Document]):
         except Exception as e:
             logger.exception("Delete failed for %s", document)  # даст полный стек
             raise http_404(msg=f"Failed to delete document: {document}") from e
+
+    @staticmethod
+    def _trashed_by(owner: TokenData):
+        """
+        Rows that belong in *this* caller's bin.
+
+        The bin lists what the user deleted, not what the user owns. Those are
+        different sets: `delete()` (through `_get_instance`) accepts any row
+        that is `public` inside the caller's tenant/department, and everything
+        the filesystem importer created is `public` under one synthetic
+        `OWNER_ID`. Scoping the bin by `owner_id` therefore made the ordinary
+        case — deleting an imported file — look like data loss: the row left
+        every listing and turned up in no bin, and `restore` refused it too.
+
+        `deleted_by IS NULL` is a row trashed before that column existed; those
+        fall back to the old rule so an existing bin does not empty itself on
+        deploy.
+        """
+        return or_(
+            Document.deleted_by == owner.id,
+            and_(Document.deleted_by.is_(None), Document.owner_id == owner.id),
+        )
 
     @staticmethod
     def _parent_is_trashed():
@@ -1132,7 +1201,7 @@ class MetadataRepository(BaseRepository[Document]):
         """
         stmt = (
             select(Document)
-            .where(Document.owner_id == owner.id)
+            .where(self._trashed_by(owner))
             .where(Document.tenant_id == owner.tenant_id)
             .where(Document.department_id == owner.department_id)
             .where(Document.status == DocStatus.deleted)
@@ -1145,10 +1214,10 @@ class MetadataRepository(BaseRepository[Document]):
             )
         )
         result = await self.session.scalars(stmt)
-        docs = [
+        docs = await self._with_owners([
             DocumentMetadataRead.model_validate(doc, from_attributes=True)
             for doc in result
-        ]
+        ])
         return {"response": docs, "no_of_docs": len(docs)}
 
     #: What a restored document's status becomes.
@@ -1180,7 +1249,7 @@ class MetadataRepository(BaseRepository[Document]):
             await self.session.execute(
                 select(Document)
                 .where(Document.id == doc_id)
-                .where(Document.owner_id == owner.id)
+                .where(self._trashed_by(owner))
                 .where(Document.tenant_id == owner.tenant_id)
                 .where(Document.department_id == owner.department_id)
                 .where(Document.status == DocStatus.deleted)
@@ -1216,14 +1285,16 @@ class MetadataRepository(BaseRepository[Document]):
         await self.session.execute(
             update(Document)
             .where(Document.id.in_(ids))
-            .values(deleted_at=None, status=self.RESTORED_STATUS)
+            .values(deleted_at=None, status=self.RESTORED_STATUS, deleted_by=None)
         )
         # Flush, not commit — matches `perm_delete_a_doc`; the request's session
         # dependency commits once at the end.
         await self.session.flush()
         await self.session.refresh(root)
 
-        return DocumentMetadataRead.model_validate(root, from_attributes=True)
+        return await self._with_owner(
+            DocumentMetadataRead.model_validate(root, from_attributes=True)
+        )
 
     async def _purge_dependents(self, ids: list[int]) -> None:
         """
@@ -1275,7 +1346,7 @@ class MetadataRepository(BaseRepository[Document]):
     async def perm_delete_a_doc(self, document: UUID | None, owner: TokenData) -> None:
         result = await self.session.execute(
             select(Document)
-            .where(Document.owner_id == owner.id)
+            .where(self._trashed_by(owner))
             .where(Document.tenant_id == owner.tenant_id)
             .where(Document.department_id == owner.department_id)
             .where(Document.id == document)
@@ -1305,7 +1376,7 @@ class MetadataRepository(BaseRepository[Document]):
         """
         result = await self.session.execute(
             select(Document)
-            .where(Document.owner_id == owner.id)
+            .where(self._trashed_by(owner))
             .where(Document.tenant_id == owner.tenant_id)
             .where(Document.department_id == owner.department_id)
             .where(Document.status == DocStatus.deleted)
@@ -1348,7 +1419,7 @@ class MetadataRepository(BaseRepository[Document]):
             # `is_archived`, while the status drives the archive page.
             change = {"status": DocStatus.archived, "is_archived": True}
             await self._execute_update(db_document=doc, changes=change)
-            return DocumentMetadataRead(**doc.__dict__)
+            return await self._with_owner(DocumentMetadataRead(**doc.__dict__))
 
         if doc and doc.status == DocStatus.archived:
             raise http_409(msg="Документ уже в архиве")
@@ -1363,7 +1434,7 @@ class MetadataRepository(BaseRepository[Document]):
         if doc and doc.status == DocStatus.archived:
             change = {"status": "private", "is_archived": False}
             await self._execute_update(db_document=doc, changes=change)
-            return DocumentMetadataRead(**doc.__dict__)
+            return await self._with_owner(DocumentMetadataRead(**doc.__dict__))
         if doc and doc.status != DocStatus.archived:
             raise http_409(msg="Document is not archived")
         raise http_404(msg="Document does not exits")
@@ -1454,7 +1525,8 @@ class MetadataRepository(BaseRepository[Document]):
         )
         
         result = (await self.session.execute(stmt)).scalars().all()
-        return {"documents": [DocumentMetadataRead.from_orm(doc) for doc in result], "count": len(result)}
+        docs = await self._with_owners([DocumentMetadataRead.from_orm(doc) for doc in result])
+        return {"documents": docs, "count": len(result)}
 
     async def favorited_list(self, user: TokenData):
         # NB: this used to be `is_favourited OR status == public`, which matched
@@ -1468,7 +1540,8 @@ class MetadataRepository(BaseRepository[Document]):
         )
 
         result = (await self.session.execute(stmt)).scalars().all()
-        return {"documents": [DocumentMetadataRead.from_orm(doc) for doc in result], "count": len(result)}
+        docs = await self._with_owners([DocumentMetadataRead.from_orm(doc) for doc in result])
+        return {"documents": docs, "count": len(result)}
 
 
 

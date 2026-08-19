@@ -32,5 +32,6 @@ class User(Base):
                             nullable=False,
                             default=lambda: datetime.now(timezone.utc))
 
-    documents      = relationship("Document", back_populates="owner")
+    documents      = relationship("Document", back_populates="owner",
+                                  foreign_keys="Document.owner_id")
 

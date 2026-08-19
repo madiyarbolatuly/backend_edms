@@ -1,5 +1,5 @@
 import logging
-from sqlalchemy import create_engine, inspect, select
+from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, Session
@@ -71,6 +71,47 @@ def ensure_indexes() -> None:
                 logger.warning("Could not create index %s: %s", index.name, e)
 
 
+def ensure_columns() -> None:
+    """
+    Add columns a model declares that the live table is missing.
+
+    Same reason as `ensure_indexes`: `metadata.create_all` never alters a table
+    that already exists, and this schema is created on boot rather than by
+    migration, so a column added to a model would otherwise be missing forever
+    on any database that has been up once — and every query naming it fails.
+
+    Only nullable columns without a default are added, and only the column
+    itself — not any FK or index it declares. Anything more needs a backfill or
+    a lock decision that does not belong in a boot hook, and is left to Alembic
+    (`migrations/versions/`).
+    """
+    inspector = inspect(engine)
+    for table in metadata.sorted_tables:
+        if not inspector.has_table(table.name):
+            continue
+        existing = {c["name"] for c in inspector.get_columns(table.name)}
+        for column in table.columns:
+            if column.name in existing:
+                continue
+            if not column.nullable or column.default is not None or column.server_default is not None:
+                logger.warning(
+                    "Column %s.%s is missing and cannot be added automatically",
+                    table.name, column.name,
+                )
+                continue
+            ddl = column.type.compile(engine.dialect)
+            try:
+                with engine.begin() as conn:
+                    conn.execute(
+                        text(f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {ddl}')
+                    )
+                logger.info("Added missing column %s.%s", table.name, column.name)
+            except SQLAlchemyError as e:
+                # Losing the race with another worker booting at the same time
+                # is the expected failure, and it means the column now exists.
+                logger.warning("Could not add column %s.%s: %s", table.name, column.name, e)
+
+
 async def check_tables():
     try:
         with Session(engine) as _session:
@@ -82,6 +123,7 @@ async def check_tables():
         logger.error("Error Creating table: %s", e)
         raise http_500(msg="An error occurred while creating tables.") from e
 
+    ensure_columns()
     ensure_indexes()
 
     # Update the document list query to exclude archived documents

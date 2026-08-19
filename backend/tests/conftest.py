@@ -68,9 +68,16 @@ async def session():
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
 
     async with engine.begin() as conn:
-        # Only the documents table: the rest of the schema drags in FKs to
-        # users/tenants that these tests do not exercise.
-        await conn.run_sync(Base.metadata.create_all, tables=[Document.__table__])
+        # `documents`, plus `users`: every listing resolves owner labels through
+        # `_owner_labels`, which selects from `users`. Creating documents alone
+        # made each of those calls fail with "no such table: users". The rows
+        # themselves are not needed — the lookup simply finds nothing — and
+        # SQLite does not enforce the FKs, so no user rows are inserted.
+        from app.db.tables.auth.auth import User
+
+        await conn.run_sync(
+            Base.metadata.create_all, tables=[Document.__table__, User.__table__]
+        )
 
     maker = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with maker() as s:
@@ -217,6 +224,17 @@ def make_document(session):
         return doc
 
     return _make
+
+
+@pytest.fixture
+def colleague() -> TokenData:
+    """A second caller inside the *same* tenant and department."""
+    return TokenData(
+        id="user-2",
+        username="colleague",
+        tenant_id=TENANT_ID,
+        department_id=DEPARTMENT_ID,
+    )
 
 
 @pytest.fixture

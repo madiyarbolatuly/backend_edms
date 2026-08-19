@@ -102,15 +102,61 @@ class TestWhatTheBinShows:
 
         assert await bin_names(repo, owner) == []
 
-    async def test_another_owners_trash_is_not_listed(
+    async def test_what_i_deleted_is_in_my_bin_whoever_owns_it(
         self, repo, owner, make_document
     ):
+        """
+        The reported bug: deleting a file that belongs to someone else made it
+        vanish without a trace.
+
+        `delete()` accepts any `public` row in the caller's tenant/department,
+        and the filesystem importer writes every row as `public` under one
+        synthetic owner — so this is the ordinary case in this deployment, not
+        an edge case. The bin is scoped by who deleted the row, not by who owns
+        it.
+        """
         mine = await make_document("мой.pdf")
         theirs = await make_document("чужой.pdf", owner_id="someone-else")
         await repo.delete(document=mine.id, owner=owner)
         await repo.delete(document=theirs.id, owner=owner)
 
-        assert await bin_names(repo, owner) == ["мой.pdf"]
+        assert sorted(await bin_names(repo, owner)) == ["мой.pdf", "чужой.pdf"]
+
+    async def test_a_deletion_by_someone_else_is_not_in_my_bin(
+        self, repo, owner, colleague, make_document
+    ):
+        """A colleague's bin stays their own — only the scoping rule changed."""
+        theirs = await make_document("их.pdf", owner_id="someone-else")
+        await repo.delete(document=theirs.id, owner=colleague)
+
+        assert await bin_names(repo, owner) == []
+
+    async def test_a_row_trashed_before_deleted_by_existed_still_shows(
+        self, repo, owner, make_document, session
+    ):
+        """
+        `deleted_by` is NULL on everything already in the bin at deploy time.
+        Those rows fall back to the old `owner_id` rule, so an existing bin does
+        not empty itself.
+        """
+        from datetime import datetime, timezone
+
+        from sqlalchemy import update
+
+        from app.db.tables.documents.documents import Document
+
+        doc = await make_document("старый.pdf")
+        await session.execute(
+            update(Document)
+            .where(Document.id == doc.id)
+            .values(
+                status=DocStatus.deleted,
+                deleted_at=datetime.now(timezone.utc),
+                deleted_by=None,
+            )
+        )
+
+        assert await bin_names(repo, owner) == ["старый.pdf"]
 
     async def test_folders_are_listed_before_files(self, repo, owner, make_document):
         folder = await make_document("Папка", file_type="folder", size=None)
@@ -204,11 +250,23 @@ class TestRestore:
         with pytest.raises(Exception):
             await repo.restore(doc_id=doc.id, owner=owner)
 
-    async def test_another_owners_document_cannot_be_restored(
+    async def test_a_document_i_deleted_can_be_restored_whoever_owns_it(
         self, repo, owner, make_document
     ):
+        """The other half of the reported bug: restore was scoped the same way."""
         theirs = await make_document("чужой.pdf", owner_id="someone-else")
         await repo.delete(document=theirs.id, owner=owner)
+
+        restored = await repo.restore(doc_id=theirs.id, owner=owner)
+
+        assert restored.name == "чужой.pdf"
+        assert await bin_names(repo, owner) == []
+
+    async def test_a_document_someone_else_deleted_cannot_be_restored(
+        self, repo, owner, colleague, make_document
+    ):
+        theirs = await make_document("чужой.pdf", owner_id="someone-else")
+        await repo.delete(document=theirs.id, owner=colleague)
 
         with pytest.raises(Exception):
             await repo.restore(doc_id=theirs.id, owner=owner)

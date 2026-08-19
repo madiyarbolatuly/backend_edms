@@ -20,12 +20,15 @@ async def create_folder(
         if not parent or getattr(parent, "file_type", getattr(parent, "type", None)) != "folder":
             raise HTTPException(status_code=400, detail="Parent must be a folder.")
             
-    return await repo.create_folder(
+    folder = await repo.create_folder(
         owner_id=user.id,
         tenant_id=user.tenant_id,
         department_id=user.department_id,
         data=data
     )
+    # Через repo, а не напрямую: response_model сериализует ORM-объект без
+    # owner_name/owner_email, и новая папка приходила бы без имени владельца.
+    return await repo.serialize_one(folder)
 
 @router.get(
     "/{parent_id}/children",

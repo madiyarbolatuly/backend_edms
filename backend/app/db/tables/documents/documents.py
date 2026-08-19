@@ -21,7 +21,10 @@ class Document(Base):
     department_id   = Column(Integer, ForeignKey("departments.id"), nullable=False)
 
     owner_id        = Column(String(255), ForeignKey("users.id"), nullable=False)
-    owner           = relationship("User", back_populates="documents")
+    # `foreign_keys` is required now that `deleted_by` is a second FK to
+    # `users`: without it SQLAlchemy cannot tell which one this join uses.
+    owner           = relationship("User", back_populates="documents",
+                                   foreign_keys=[owner_id])
     file_type        = Column(String(255), nullable=False, server_default="file")
     document_number = Column(String, nullable=False, unique=True, default=lambda: str(ULID()))
     title           = Column(String, nullable=False)
@@ -45,6 +48,15 @@ class Document(Base):
                              default=lambda: datetime.now(timezone.utc),
                              nullable=False)
     deleted_at      = Column(DateTime(timezone=True))    # set when moved to trash
+    # Who put the row in the bin. Not the same thing as `owner_id`: `delete()`
+    # accepts any row that is public within the caller's tenant/department, so
+    # a user routinely trashes documents they do not own (everything the
+    # filesystem importer created belongs to one synthetic OWNER_ID). Scoping
+    # the bin by `owner_id` therefore hid those deletions from the person who
+    # made them — the document vanished from the listings and appeared in
+    # nobody's trash. NULL means "trashed before this column existed"; the bin
+    # falls back to `owner_id` for those rows.
+    deleted_by      = Column(String(255), ForeignKey("users.id"), nullable=True)
 
     # folders (optional – keep if you need a tree)
     parent_id: Mapped[int | None] = Column(Integer, ForeignKey("documents.id"))

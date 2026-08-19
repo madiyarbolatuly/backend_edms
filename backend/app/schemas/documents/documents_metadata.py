@@ -27,6 +27,11 @@ class DocumentMetadataRead(DocumentMetadataBase):
     size: Optional[int] = None
     tags: Optional[List[str]] = Field(default_factory=list)
     status: DocStatus
+    # Resolved from `users` so a listing can show a person instead of a ULID.
+    # `owner_name` is the username, falling back to the email when the account
+    # has no usable name; both stay None when the owner row is gone.
+    owner_name: Optional[str] = None
+    owner_email: Optional[str] = None
 
 
 class FolderCreate(BaseSchema):
