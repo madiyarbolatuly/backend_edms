@@ -134,4 +134,8 @@ def mount_frontend(application: FastAPI, build_dir: pathlib.Path) -> bool:
     return True
 
 
-mount_frontend(app, pathlib.Path(__file__).parent / "frontend" / "dist")
+# The build directory existing is no longer reason enough to serve it — the
+# deployment keeps a checkout of the frontend next to the API while a separate
+# systemd unit is what actually serves it. See `settings.serve_frontend`.
+if settings.serve_frontend:
+    mount_frontend(app, pathlib.Path(__file__).parent / "frontend" / "dist")

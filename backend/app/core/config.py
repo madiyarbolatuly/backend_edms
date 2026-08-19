@@ -27,6 +27,12 @@ class GlobalConfig(BaseSettings):
     postgres_db: str = os.environ.get("POSTGRES_DB")
     
     debug: bool = str(os.environ.get("DEBUG", "False")).lower() == "true"
+
+    # Whether this process also serves the built SPA at "/". Off by default:
+    # on the deployment the frontend is a separate systemd unit holding its own
+    # port, and a second copy served from here would be a stale build shadowing
+    # it. Set SERVE_FRONTEND=true only where the API is the only web process.
+    serve_frontend: bool = str(os.environ.get("SERVE_FRONTEND", "False")).lower() == "true"
     db_echo_log: bool = str(os.environ.get("DEBUG", "False")).lower() == "true"
 
     # ─── user config ────────────────────────────────────────────────────────────
